@@ -1,0 +1,35 @@
+{
+  "name": "udon-ts",
+  "version": "0.1.0",
+  "description": "A TypeScript to VRChat Udon Assembly transpiler",
+  "type": "module",
+  "bin": {
+    "udon-ts": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "types",
+    "builtins",
+    "unity"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "generate:types": "npm run build && node dist/cli.js --emit-types types/udon.d.ts",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p examples/tsconfig.json",
+    "test": "npm run build && tsc -p tsconfig.test.json && node --test dist-test/test/*.test.js"
+  },
+  "keywords": ["vrchat", "udon", "typescript", "transpiler"],
+  "license": "MIT",
+  "dependencies": {
+    "typescript": "^5.9.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

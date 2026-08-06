@@ -1,0 +1,16 @@
+[
+  {"owner":"UnityEngineDebug","member":"log","aliases":["Log"],"signature":"UnityEngineDebug.__Log__SystemObject__SystemVoid","parameters":[{"type":"SystemObject"}],"returns":"SystemVoid","static":true,"kind":"method"},
+  {"owner":"UnityEngineDebug","member":"logWarning","aliases":["LogWarning"],"signature":"UnityEngineDebug.__LogWarning__SystemObject__SystemVoid","parameters":[{"type":"SystemObject"}],"returns":"SystemVoid","static":true,"kind":"method"},
+  {"owner":"UnityEngineDebug","member":"logError","aliases":["LogError"],"signature":"UnityEngineDebug.__LogError__SystemObject__SystemVoid","parameters":[{"type":"SystemObject"}],"returns":"SystemVoid","static":true,"kind":"method"},
+  {"owner":"UnityEngineTime","member":"deltaTime","signature":"UnityEngineTime.__get_deltaTime__SystemSingle","parameters":[],"returns":"SystemSingle","static":true,"kind":"get"},
+  {"owner":"UnityEngineTime","member":"time","signature":"UnityEngineTime.__get_time__SystemSingle","parameters":[],"returns":"SystemSingle","static":true,"kind":"get"},
+  {"owner":"UnityEngineMathf","member":"sin","aliases":["Sin"],"signature":"UnityEngineMathf.__Sin__SystemSingle__SystemSingle","parameters":[{"type":"SystemSingle"}],"returns":"SystemSingle","static":true,"kind":"method"},
+  {"owner":"UnityEngineMathf","member":"cos","aliases":["Cos"],"signature":"UnityEngineMathf.__Cos__SystemSingle__SystemSingle","parameters":[{"type":"SystemSingle"}],"returns":"SystemSingle","static":true,"kind":"method"},
+  {"owner":"UnityEngineMathf","member":"clamp","aliases":["Clamp"],"signature":"UnityEngineMathf.__Clamp__SystemSingle_SystemSingle_SystemSingle__SystemSingle","parameters":[{"type":"SystemSingle"},{"type":"SystemSingle"},{"type":"SystemSingle"}],"returns":"SystemSingle","static":true,"kind":"method"},
+  {"owner":"VRCSDKBaseNetworking","member":"localPlayer","signature":"VRCSDKBaseNetworking.__get_LocalPlayer__VRCSDKBaseVRCPlayerApi","parameters":[],"returns":"VRCSDKBaseVRCPlayerApi","static":true,"kind":"get"},
+  {"owner":"VRCSDKBaseVRCPlayerApi","member":"displayName","signature":"VRCSDKBaseVRCPlayerApi.__get_displayName__SystemString","parameters":[],"returns":"SystemString","static":false,"kind":"get"},
+  {"owner":"VRCSDKBaseVRCPlayerApi","member":"setWalkSpeed","aliases":["SetWalkSpeed"],"signature":"VRCSDKBaseVRCPlayerApi.__SetWalkSpeed__SystemSingle__SystemVoid","parameters":[{"type":"SystemSingle"}],"returns":"SystemVoid","static":false,"kind":"method"},
+  {"owner":"VRCSDKBaseVRCPlayerApi","member":"setRunSpeed","aliases":["SetRunSpeed"],"signature":"VRCSDKBaseVRCPlayerApi.__SetRunSpeed__SystemSingle__SystemVoid","parameters":[{"type":"SystemSingle"}],"returns":"SystemVoid","static":false,"kind":"method"},
+  {"owner":"VRCSDKBaseVRCPlayerApi","member":"setJumpImpulse","aliases":["SetJumpImpulse"],"signature":"VRCSDKBaseVRCPlayerApi.__SetJumpImpulse__SystemSingle__SystemVoid","parameters":[{"type":"SystemSingle"}],"returns":"SystemVoid","static":false,"kind":"method"},
+  {"owner":"UnityEngineGameObject","member":"setActive","aliases":["SetActive"],"signature":"UnityEngineGameObject.__SetActive__SystemBoolean__SystemVoid","parameters":[{"type":"SystemBoolean"}],"returns":"SystemVoid","static":false,"kind":"method"}
+]
