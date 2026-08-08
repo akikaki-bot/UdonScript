@@ -10,9 +10,9 @@ import {
   type SyncMode,
   type ValueRef
 } from "./compiler-context.js";
-import { eventsBySourceName } from "./events.js";
+import { eventsBySourceName } from "../events.js";
 import { ExpressionTypeInferer } from "./expression-type-inference.js";
-import { binaryExtern, ExternRegistry, unaryExtern } from "./extern-registry.js";
+import { binaryExtern, ExternRegistry, unaryExtern } from "../extern-registry.js";
 import type {
   CompileOptions,
   CompileResult,
@@ -20,8 +20,8 @@ import type {
   EventDefinition,
   ExternDefinition,
   UdonType
-} from "./model.js";
-import { defaultValue, escapeString, isArray, isNumeric, sourceTypeName, typeFromAnnotation } from "./type-system.js";
+} from "../model.js";
+import { defaultValue, escapeString, isArray, isNumeric, sourceTypeName, typeFromAnnotation } from "../type-system.js";
 
 class CompileFailure extends Error {
   constructor(message: string, readonly node: ts.Node) { super(message); }

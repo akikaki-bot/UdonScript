@@ -1,5 +1,5 @@
 import type ts from "typescript";
-import type { UdonType } from "./model.js";
+import type { UdonType } from "../model.js";
 
 export interface ValueRef {
   symbol: string;

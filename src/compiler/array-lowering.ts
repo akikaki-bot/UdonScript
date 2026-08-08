@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { FlowContext, Scope, ValueRef } from "./compiler-context.js";
-import type { UdonType } from "./model.js";
-import { arrayElementType, isArray, sourceTypeName } from "./type-system.js";
+import type { UdonType } from "../model.js";
+import { arrayElementType, isArray, sourceTypeName } from "../type-system.js";
 
 export interface ArrayExterns {
   elementType: UdonType;

@@ -1,4 +1,4 @@
-export { compile } from "./compiler.js";
+export { compile } from "./compiler/index.js";
 export { ExternRegistry } from "./extern-registry.js";
 export { events } from "./events.js";
 export { generateDeclarations } from "./declarations.js";

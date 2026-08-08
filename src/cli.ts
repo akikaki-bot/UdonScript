@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { compile } from "./compiler.js";
+import { compile } from "./compiler/index.js";
 import { generateDeclarations } from "./declarations.js";
 import { ExternRegistry } from "./extern-registry.js";
 import { importNodeDump } from "./node-importer.js";

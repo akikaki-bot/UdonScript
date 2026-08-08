@@ -1,6 +1,6 @@
 import type { SyncMode, ValueRef } from "./compiler-context.js";
-import type { UdonType } from "./model.js";
-import { defaultValue, escapeString } from "./type-system.js";
+import type { UdonType } from "../model.js";
+import { defaultValue, escapeString } from "../type-system.js";
 
 interface HeapValue extends ValueRef {
   initial: string;

@@ -1,7 +1,7 @@
 import ts from "typescript";
 import type { Scope } from "./compiler-context.js";
-import type { UdonType } from "./model.js";
-import { arrayElementType, isArray } from "./type-system.js";
+import type { UdonType } from "../model.js";
+import { arrayElementType, isArray } from "../type-system.js";
 
 export interface TypeInferenceContext {
   functionReturnType(name: string): UdonType | undefined;
