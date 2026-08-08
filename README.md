@@ -1,6 +1,10 @@
-# udon-ts
+<p align="center">
+  <img src="icons/UdonScript.svg" alt="UdonScript logo" width="160">
+</p>
 
-TypeScriptの構文・型注釈から、VRChatで読み込めるUdon Assembly (`.uasm`) を生成するトランスパイラです。
+# UdonScript (US)
+
+**UdonScript**（略称 **US**）は、TypeScriptの構文・型注釈からVRChatで読み込めるUdon Assembly (`.uasm`) を生成するトランスパイラです。
 
 CLIに加えて、Unityの`Assets`内に置いたTypeScriptをコンパイルし、Udon Behaviourへ割り当てるEditor拡張を同梱しています。
 
@@ -235,7 +239,5 @@ udon-ts <input.ts> [-o output.uasm] [--externs registry.json]
 ## 現在の制限
 
 - 配列以外のオブジェクト生成、`switch`、`foreach` は未実装です。
-- Udon externの完全な公開一覧は公式にも存在しません。VRChat SDK/Udon Graphから取得した一覧を追加レジストリとして供給する設計です。
-- `.uasm` のUnityインポートと実機VM検証にはVRChat Worlds SDKが必要です。
 
 Udon VM/Assemblyの仕様は [VRChat公式ドキュメント](https://creators.vrchat.com/worlds/udon/vm-and-assembly/) を参照しています。
