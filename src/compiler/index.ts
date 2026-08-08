@@ -12,6 +12,8 @@ import {
 } from "./compiler-context.js";
 import { eventsBySourceName } from "../events.js";
 import { ExpressionTypeInferer } from "./expression-type-inference.js";
+import { EventEmitterParser } from "./event-emitter.js";
+import { UdonVariableParser, type UdonVariableMarker } from "./udon-variable.js";
 import { binaryExtern, ExternRegistry, unaryExtern } from "../extern-registry.js";
 import type {
   CompileOptions,
@@ -27,18 +29,31 @@ class CompileFailure extends Error {
   constructor(message: string, readonly node: ts.Node) { super(message); }
 }
 
+const eventExterns = {
+  emit: "VRCUdonCommonInterfacesIUdonEventReceiver.__SendCustomEvent__SystemString__SystemVoid",
+  delayedSeconds: "VRCUdonCommonInterfacesIUdonEventReceiver.__SendCustomEventDelayedSeconds__SystemString_SystemSingle_VRCUdonCommonEnumsEventTiming__SystemVoid",
+  delayedFrames: "VRCUdonCommonInterfacesIUdonEventReceiver.__SendCustomEventDelayedFrames__SystemString_SystemInt32_VRCUdonCommonEnumsEventTiming__SystemVoid",
+  network: "VRCUdonCommonInterfacesIUdonEventReceiver.__SendCustomNetworkEvent__VRCUdonCommonInterfacesNetworkEventTarget_SystemString__SystemVoid"
+} as const;
+
 class Compiler {
   private readonly sourceFile: ts.SourceFile;
   private readonly registry: ExternRegistry;
   private readonly typeInference: ExpressionTypeInferer;
   private readonly arrays: ArrayLowerer;
+  private readonly eventEmitter: EventEmitterParser;
+  private readonly udonVariables: UdonVariableParser;
+  private readonly selfReceiver: ValueRef;
   private readonly diagnostics: Diagnostic[] = [];
   private readonly assembly = new AssemblyBuilder();
   private readonly functions = new Map<string, FunctionInfo>();
   private readonly entries: FunctionInfo[] = [];
+  private readonly eventNameValues = new Map<string, ValueRef>();
   private readonly globalScope = new Scope();
-  private readonly globalInitializers: Array<{ declaration: GlobalDeclaration; target: ValueRef }> = [];
+  private readonly globalInitializers: Array<{ declaration: GlobalDeclaration; initializer: ts.Expression; target: ValueRef }> = [];
   private readonly callStack: string[] = [];
+  private updateEventTiming?: ValueRef;
+  private networkTargetAll?: ValueRef;
 
   constructor(private readonly source: string, private readonly options: CompileOptions) {
     const fileName = options.fileName ?? "input.ts";
@@ -59,6 +74,14 @@ class Compiler {
       requireType: (node) => this.requireType(node),
       fail: (message, node) => this.fail(message, node)
     });
+    this.eventEmitter = new EventEmitterParser((message, node) => this.fail(message, node));
+    this.udonVariables = new UdonVariableParser((message, node) => this.fail(message, node));
+    this.selfReceiver = this.allocate(
+      "__this_udonBehaviour",
+      "VRCUdonCommonInterfacesIUdonEventReceiver",
+      "this",
+      { exact: true }
+    );
   }
 
   compile(): CompileResult {
@@ -77,10 +100,19 @@ class Compiler {
 
     this.collectDeclarations();
     const declaredEvents = new Set<string>();
+    const entryGroups = new Map<string, FunctionInfo[]>();
     for (const info of this.entries) {
       const event = this.eventForName(info.name, info.node.parameters.length);
       declaredEvents.add(event?.sourceName ?? info.name);
-      this.tryCompile(info.node, () => this.compileEntryPoint(info, event));
+      const key = event?.assemblyName ?? sanitizeSymbol(info.name);
+      const group = entryGroups.get(key) ?? [];
+      group.push(info);
+      entryGroups.set(key, group);
+    }
+    for (const group of entryGroups.values()) {
+      const first = group[0]!;
+      const event = this.eventForName(first.name, first.node.parameters.length);
+      this.tryCompile(first.node, () => this.compileEntryPoint(group, event));
     }
 
     if (this.globalInitializers.length > 0 && !declaredEvents.has("onEnable")) {
@@ -99,15 +131,41 @@ class Compiler {
     this.globalScope.set("gameObject", this.allocate("__this_gameObject", "UnityEngineGameObject", "this", { exact: true }));
     this.globalScope.set("transform", this.allocate("__this_transform", "UnityEngineTransform", "this", { exact: true }));
     for (const statement of this.sourceFile.statements) {
+      if (ts.isExpressionStatement(statement)) {
+        try {
+          const registration = this.eventEmitter.registration(statement);
+          if (registration) {
+            const event = this.eventForName(registration.name, registration.handler.parameters.length);
+            this.registerFunction(
+              registration.handler,
+              registration.name,
+              true,
+              event?.returns ?? "SystemVoid",
+              false
+            );
+            continue;
+          }
+          if (ts.isCallExpression(statement.expression) && this.eventEmitter.callName(statement.expression)) {
+            this.fail(`${this.eventEmitter.callName(statement.expression)}はイベントハンドラー内で使用してください`, statement);
+          }
+        } catch (error) {
+          this.capture(error, statement);
+          continue;
+        }
+      }
       if (ts.isFunctionDeclaration(statement) && statement.name) {
         this.registerFunction(statement, statement.name.text,
           this.hasModifier(statement, ts.SyntaxKind.ExportKeyword) || Boolean(this.eventForName(statement.name.text)));
       }
       if (ts.isVariableStatement(statement)) {
         const exported = this.hasModifier(statement, ts.SyntaxKind.ExportKeyword);
-        const sync = this.syncMode(statement);
+        const constant = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
         for (const declaration of statement.declarationList.declarations) {
-          this.collectGlobal(declaration, exported, sync);
+          try {
+            const marker = this.udonVariables.topLevel(declaration);
+            if (marker && constant) this.fail("udonVariableはInspectorから変更されるためconstでは宣言できません", declaration);
+            this.collectGlobal(declaration, exported || Boolean(marker), marker?.sync, marker);
+          } catch (error) { this.capture(error, declaration); }
         }
       }
       if (ts.isClassDeclaration(statement)) {
@@ -116,9 +174,22 @@ class Compiler {
         if (!extendsUdon) continue;
         for (const member of statement.members) {
           if (ts.isPropertyDeclaration(member)) {
-            const exported = !this.hasModifier(member, ts.SyntaxKind.PrivateKeyword) &&
-              !this.hasModifier(member, ts.SyntaxKind.ProtectedKeyword);
-            this.collectGlobal(member, exported, this.syncMode(member));
+            try {
+              const marker = this.udonVariables.classField(member);
+              if (marker && (this.hasModifier(member, ts.SyntaxKind.PrivateKeyword) ||
+                this.hasModifier(member, ts.SyntaxKind.ProtectedKeyword))) {
+                this.fail("@udonVariableフィールドはprivateまたはprotectedにできません", member);
+              }
+              if (marker && this.hasModifier(member, ts.SyntaxKind.ReadonlyKeyword)) {
+                this.fail("@udonVariableはInspectorから変更されるためreadonlyにはできません", member);
+              }
+              if (marker && this.hasModifier(member, ts.SyntaxKind.StaticKeyword)) {
+                this.fail("@udonVariableをstaticフィールドには指定できません", member);
+              }
+              const exported = Boolean(marker) || !this.hasModifier(member, ts.SyntaxKind.PrivateKeyword) &&
+                !this.hasModifier(member, ts.SyntaxKind.ProtectedKeyword);
+              this.collectGlobal(member, exported, marker?.sync, marker);
+            } catch (error) { this.capture(error, member); }
           } else if (ts.isMethodDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
             const name = member.name.text;
             const isPublic = !this.hasModifier(member, ts.SyntaxKind.PrivateKeyword) &&
@@ -130,87 +201,135 @@ class Compiler {
     }
   }
 
-  private collectGlobal(declaration: GlobalDeclaration, exported: boolean, sync?: SyncMode): void {
+  private collectGlobal(
+    declaration: GlobalDeclaration,
+    exported: boolean,
+    sync?: SyncMode,
+    marker?: UdonVariableMarker
+  ): void {
     this.tryCompile(declaration, () => {
       if (!ts.isIdentifier(declaration.name)) this.fail("分割代入はまだフィールドでは使えません", declaration.name);
       const name = declaration.name.text;
-      const type = declaration.type
-        ? this.requireType(declaration.type)
-        : declaration.initializer
-          ? this.inferLiteralType(declaration.initializer)
-          : undefined;
+      const declaredType = declaration.type ? this.requireType(declaration.type) : undefined;
+      const markerType = marker?.type ? this.requireType(marker.type) : undefined;
+      if (declaredType && markerType && declaredType !== markerType) {
+        this.fail(`${sourceTypeName(markerType)} を ${sourceTypeName(declaredType)} として使用できません`, marker!.type!);
+      }
+      const initializer = marker && ts.isVariableDeclaration(declaration)
+        ? marker.initializer
+        : declaration.initializer;
+      const type = declaredType ?? markerType ?? (initializer
+        ? this.inferLiteralType(initializer)
+        : undefined);
       if (!type) this.fail(`変数 '${name}' にはUdon型注釈が必要です`, declaration);
-      const constant = declaration.initializer ? this.dataLiteral(declaration.initializer, type) : undefined;
+      const constant = initializer ? this.dataLiteral(initializer, type) : undefined;
       const target = this.allocate(name, type, constant ?? defaultValue(type), {
         exported,
         exact: true,
         ...(sync ? { sync } : {})
       });
       this.globalScope.set(name, target);
-      if (declaration.initializer && constant === undefined) this.globalInitializers.push({ declaration, target });
+      if (initializer && constant === undefined) this.globalInitializers.push({ declaration, initializer, target });
     });
   }
 
-  private registerFunction(node: FunctionNode, name: string, entry: boolean): void {
+  private registerFunction(
+    node: FunctionNode,
+    name: string,
+    entry: boolean,
+    defaultReturn: UdonType = "SystemVoid",
+    registerForCalls = true
+  ): void {
     try {
-      const returnType = node.type ? this.requireType(node.type) : "SystemVoid";
+      const returnType = node.type ? this.requireType(node.type) : defaultReturn;
       const info: FunctionInfo = { node, name, returnType, entry };
-      this.functions.set(name, info);
+      if (registerForCalls) this.functions.set(name, info);
       if (entry) this.entries.push(info);
     } catch (error) { this.capture(error, node); }
   }
 
-  private compileEntryPoint(info: FunctionInfo, event?: EventDefinition): void {
-    const node = info.node;
-    if (!node.body) return;
-    const sourceName = info.name;
+  private compileEntryPoint(infos: readonly FunctionInfo[], event?: EventDefinition): void {
+    const first = infos[0]!;
+    const sourceName = first.name;
     const assemblyName = event?.assemblyName ?? sanitizeSymbol(sourceName);
-    if (!event && this.eventForName(sourceName)) {
-      const arities = this.eventDefinitionsForName(sourceName).map((definition) => definition.parameters.length).join(" / ");
-      this.fail(`イベント '${sourceName}' の引数は ${arities} 個必要です`, node);
+    if (event?.returns && infos.length > 1) {
+      this.fail(`戻り値を持つイベント '${sourceName}' には複数のハンドラーを登録できません`, infos[1]!.node);
     }
-    if (!event && node.parameters.length > 0) this.fail("カスタムイベントに引数は指定できません", node.parameters[0]!);
-    if (event && node.parameters.length !== event.parameters.length) {
-      this.fail(`イベント '${sourceName}' の引数は ${event.parameters.length} 個必要です`, node);
-    }
+    for (const info of infos) this.validateEventHandler(info, event, assemblyName);
     this.emit(`.export ${assemblyName}`);
     this.label(assemblyName);
-    const scope = new Scope(this.globalScope);
-    if (event) {
-      event.parameters.forEach((parameter, index) => {
-        const sourceParameter = node.parameters[index];
-        if (!sourceParameter || !ts.isIdentifier(sourceParameter.name)) return;
-        if (sourceParameter.type) {
-          const annotated = this.requireType(sourceParameter.type);
-          if (annotated !== parameter.type) {
-            this.fail(`イベント引数 '${sourceParameter.name.text}' は ${sourceTypeName(parameter.type)} 型です`, sourceParameter);
-          }
-        }
-        const value = this.allocate(parameter.symbol, parameter.type, "null", { exact: true });
-        scope.set(sourceParameter.name.text, value);
-      });
-    }
     const expectedReturn = event?.returns ?? "SystemVoid";
-    if (info.returnType !== expectedReturn) {
-      this.fail(`イベント '${sourceName}' の戻り値は ${sourceTypeName(expectedReturn)} 型です`, node);
-    }
     const eventReturn = event?.returns
       ? this.allocate(event.returnSymbol ?? "__returnValue", event.returns, defaultValue(event.returns), { exact: true })
       : undefined;
-    const flow: FlowContext = {
-      returnLabel: this.uniqueLabel(`${sourceName}_end`),
-      ...(eventReturn ? { returnValue: eventReturn } : {})
-    };
-    if (sourceName === "onEnable") this.emitGlobalInitializers(flow);
-    this.compileStatements(node.body.statements, scope, flow);
-    this.label(flow.returnLabel);
+    if (event?.sourceName === "onEnable") {
+      const initializerEnd = this.uniqueLabel("onEnable_initializer_end");
+      this.emitGlobalInitializers({ returnLabel: initializerEnd });
+      this.label(initializerEnd);
+    }
+    for (const info of infos) {
+      const node = info.node;
+      if (!node.body) continue;
+      const scope = this.eventHandlerScope(node, event);
+      const flow: FlowContext = {
+        returnLabel: this.uniqueLabel(`${sourceName}_handler_end`),
+        ...(eventReturn ? { returnValue: eventReturn } : {})
+      };
+      if (ts.isBlock(node.body)) {
+        this.compileStatements(node.body.statements, scope, flow);
+      } else if (eventReturn) {
+        this.copy(this.compileExpression(node.body, scope, expectedReturn, flow), eventReturn, node.body);
+      } else {
+        this.compileExpression(node.body, scope, undefined, flow);
+      }
+      this.label(flow.returnLabel);
+    }
     this.emit("JUMP, 0xFFFFFFFC");
   }
 
+  private validateEventHandler(info: FunctionInfo, event: EventDefinition | undefined, assemblyName: string): void {
+    const node = info.node;
+    const sourceName = info.name;
+    const handlerEvent = this.eventForName(sourceName, node.parameters.length);
+    if (!handlerEvent && this.eventForName(sourceName)) {
+      const arities = this.eventDefinitionsForName(sourceName).map((definition) => definition.parameters.length).join(" / ");
+      this.fail(`イベント '${sourceName}' の引数は ${arities} 個必要です`, node);
+    }
+    if (!handlerEvent && node.parameters.length > 0) this.fail("カスタムイベントに引数は指定できません", node.parameters[0]!);
+    if (handlerEvent?.assemblyName !== event?.assemblyName || (handlerEvent?.assemblyName ?? sanitizeSymbol(sourceName)) !== assemblyName) {
+      this.fail(`イベント '${sourceName}' のハンドラー署名が一致しません`, node);
+    }
+    if (handlerEvent && event && (handlerEvent.parameters.length !== event.parameters.length ||
+      handlerEvent.parameters.some((parameter, index) => parameter.type !== event.parameters[index]?.type))) {
+      this.fail(`イベント '${sourceName}' に異なる引数形式のハンドラーを同時登録できません`, node);
+    }
+    const expectedReturn = handlerEvent?.returns ?? "SystemVoid";
+    if (info.returnType !== expectedReturn) {
+      this.fail(`イベント '${sourceName}' の戻り値は ${sourceTypeName(expectedReturn)} 型です`, node);
+    }
+  }
+
+  private eventHandlerScope(node: FunctionNode, event?: EventDefinition): Scope {
+    const scope = new Scope(this.globalScope);
+    if (!event) return scope;
+    event.parameters.forEach((parameter, index) => {
+      const sourceParameter = node.parameters[index];
+      if (!sourceParameter || !ts.isIdentifier(sourceParameter.name)) return;
+      if (sourceParameter.type) {
+        const annotated = this.requireType(sourceParameter.type);
+        if (annotated !== parameter.type) {
+          this.fail(`イベント引数 '${sourceParameter.name.text}' は ${sourceTypeName(parameter.type)} 型です`, sourceParameter);
+        }
+      }
+      const value = this.allocate(parameter.symbol, parameter.type, "null", { exact: true });
+      scope.set(sourceParameter.name.text, value);
+    });
+    return scope;
+  }
+
   private emitGlobalInitializers(flow: FlowContext): void {
-    for (const { declaration, target } of this.globalInitializers) {
-      if (!declaration.initializer) continue;
-      const value = this.compileExpression(declaration.initializer, this.globalScope, target.type, flow);
+    for (const { declaration, initializer, target } of this.globalInitializers) {
+      const value = this.compileExpression(initializer, this.globalScope, target.type, flow);
       this.copy(value, target, declaration);
     }
   }
@@ -478,6 +597,8 @@ class Compiler {
     if (ts.isIdentifier(node.expression) && node.expression.text === "extern") {
       return this.compileRawExtern(node, scope, expected, flow);
     }
+    const eventCall = this.eventEmitter.callName(node);
+    if (eventCall) return this.compileEventEmitterCall(eventCall, node, scope, expected, flow);
     if (ts.isIdentifier(node.expression)) {
       const fn = this.functions.get(node.expression.text);
       if (fn && !this.eventForName(fn.name)) return this.inlineFunction(fn, node, scope, expected, flow);
@@ -504,6 +625,102 @@ class Compiler {
     if (!output) return { symbol: "", type: "SystemVoid" };
     this.assertAssignable(output.type, expected, node);
     return output;
+  }
+
+  private compileEventEmitterCall(
+    name: string,
+    node: ts.CallExpression,
+    scope: Scope,
+    expected: UdonType | undefined,
+    flow: FlowContext
+  ): ValueRef {
+    if (node.typeArguments?.length) this.fail(`${name}には型引数を指定できません`, node.typeArguments[0]!);
+    if (name === "on") this.fail("onはトップレベルでのみ使用できます", node);
+    if (name === "emit") {
+      this.requireArgumentCount(node, 1);
+      const eventName = this.compileEventName(node.arguments[0]!);
+      this.emitExtern(eventExterns.emit, [this.selfReceiver, eventName]);
+      return this.voidValue(expected, node);
+    }
+    if (name === "emitDelayed") {
+      this.requireArgumentCount(node, 2);
+      const eventName = this.compileEventName(node.arguments[0]!);
+      const seconds = this.compileExpression(node.arguments[1]!, scope, "SystemSingle", flow);
+      const timing = this.updateTimingValue();
+      this.emitExtern(eventExterns.delayedSeconds, [this.selfReceiver, eventName, seconds, timing]);
+      return this.voidValue(expected, node);
+    }
+    if (name === "emitDelayedFrames") {
+      this.requireArgumentCount(node, 2);
+      const eventName = this.compileEventName(node.arguments[0]!);
+      const frames = this.compileExpression(node.arguments[1]!, scope, "SystemInt32", flow);
+      const timing = this.updateTimingValue();
+      this.emitExtern(eventExterns.delayedFrames, [this.selfReceiver, eventName, frames, timing]);
+      return this.voidValue(expected, node);
+    }
+    if (name === "emitNetwork") {
+      this.requireArgumentCount(node, 2);
+      const target = this.compileNetworkTarget(node.arguments[0]!, scope, flow);
+      const eventName = this.compileEventName(node.arguments[1]!, true);
+      this.emitExtern(eventExterns.network, [this.selfReceiver, target, eventName]);
+      return this.voidValue(expected, node);
+    }
+    this.fail(`未対応のイベントAPIです: ${name}`, node);
+  }
+
+  private compileEventName(node: ts.Expression, network = false): ValueRef {
+    if (!ts.isStringLiteralLike(node)) this.fail("イベント名は文字列リテラルで指定してください", node);
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(node.text)) {
+      this.fail("イベント名には英数字と_を使用し、英字から始めてください", node);
+    }
+    const event = this.eventForName(node.text);
+    if (network && event) this.fail("標準UdonイベントはemitNetworkで送信できません", node);
+    const runtimeName = event?.assemblyName ?? sanitizeSymbol(node.text);
+    const declared = this.entries.some((info) => {
+      const definition = this.eventForName(info.name, info.node.parameters.length);
+      return (definition?.assemblyName ?? sanitizeSymbol(info.name)) === runtimeName;
+    });
+    if (!declared) this.fail(`イベント '${node.text}' がこのBehaviourに登録されていません`, node);
+    const existing = this.eventNameValues.get(runtimeName);
+    if (existing) return existing;
+    const value = this.allocate(`__event_${runtimeName}`, "SystemString", escapeString(runtimeName));
+    this.eventNameValues.set(runtimeName, value);
+    return value;
+  }
+
+  private compileNetworkTarget(node: ts.Expression, scope: Scope, flow: FlowContext): ValueRef {
+    if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "NetworkEventTarget") {
+      if (node.name.text !== "All") {
+        this.fail("生UASMではAll以外のNetworkEventTarget定数を埋め込めません。udonVariable<NetworkEventTarget>()をInspectorで設定して渡してください", node);
+      }
+      this.networkTargetAll ??= this.allocate(
+        "__networkTargetAll",
+        "VRCUdonCommonInterfacesNetworkEventTarget",
+        "null"
+      );
+      return this.networkTargetAll;
+    }
+    return this.compileExpression(node, scope, "VRCUdonCommonInterfacesNetworkEventTarget", flow);
+  }
+
+  private requireArgumentCount(node: ts.CallExpression, count: number): void {
+    if (node.arguments.length !== count) {
+      this.fail(`${node.expression.getText(this.sourceFile)}は${count}引数ですが、${node.arguments.length}個渡されています`, node);
+    }
+  }
+
+  private updateTimingValue(): ValueRef {
+    this.updateEventTiming ??= this.allocate(
+      "__eventTimingUpdate",
+      "VRCUdonCommonEnumsEventTiming",
+      "null"
+    );
+    return this.updateEventTiming;
+  }
+
+  private voidValue(expected: UdonType | undefined, node: ts.Node): ValueRef {
+    this.assertAssignable("SystemVoid", expected, node);
+    return { symbol: "", type: "SystemVoid" };
   }
 
   private compileExternArguments(node: ts.CallExpression, definition: ExternDefinition, scope: Scope, flow: FlowContext): ValueRef[] {
@@ -592,7 +809,9 @@ class Compiler {
   }
 
   private inlineFunction(fn: FunctionInfo, call: ts.CallExpression, callerScope: Scope, expected: UdonType | undefined, outerFlow: FlowContext): ValueRef {
-    if (!fn.node.body) this.fail(`関数 '${fn.name}' に本体がありません`, fn.node);
+    const body = fn.node.body;
+    if (!body) this.fail(`関数 '${fn.name}' に本体がありません`, fn.node);
+    if (!ts.isBlock(body)) this.fail(`インライン関数 '${fn.name}' にはブロック本体が必要です`, body);
     if (this.callStack.includes(fn.name)) this.fail(`再帰呼び出し '${fn.name}' はUdon VMでは安全に展開できません`, call);
     if (call.arguments.length !== fn.node.parameters.length) this.fail(`関数 '${fn.name}' の引数の数が違います`, call);
     this.callStack.push(fn.name);
@@ -609,7 +828,7 @@ class Compiler {
       });
       const result = fn.returnType === "SystemVoid" ? undefined : this.allocate(`${fn.name}_return`, fn.returnType);
       const endLabel = this.uniqueLabel(`${fn.name}_inline_end`);
-      this.compileStatements(fn.node.body.statements, scope, { returnLabel: endLabel, ...(result ? { returnValue: result } : {}) });
+      this.compileStatements(body.statements, scope, { returnLabel: endLabel, ...(result ? { returnValue: result } : {}) });
       this.label(endLabel);
       if (!result) return { symbol: "", type: "SystemVoid" };
       this.assertAssignable(result.type, expected, call);
@@ -727,10 +946,6 @@ class Compiler {
   private uniqueLabel(base: string): string { return this.assembly.uniqueLabel(base); }
   private hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
     return ts.canHaveModifiers(node) && (ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) ?? false);
-  }
-  private syncMode(node: ts.Node): "none" | "linear" | "smooth" | undefined {
-    const match = node.getFullText(this.sourceFile).match(/@sync\s+(none|linear|smooth)/);
-    return match?.[1] as "none" | "linear" | "smooth" | undefined;
   }
   private sourceComment(node: ts.Node): void {
     if (!this.options.sourceMapComments) return;

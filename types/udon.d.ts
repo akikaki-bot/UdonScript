@@ -16,6 +16,7 @@ interface DeserializationResult { readonly sendTime: float; readonly receiveTime
 interface UdonInputEventArgs { readonly boolValue: bool; readonly floatValue: float; }
 declare enum VideoError { Unknown, InvalidURL, AccessDenied, PlayerError, RateLimited }
 declare enum VRCInputMethod { Keyboard, Mouse, Controller, Gaze, Vive = 5, Oculus, Count }
+declare enum NetworkEventTarget { All, Owner, Others, Self }
 interface ControllerColliderPlayerHit { readonly player: VRCPlayerApi; }
 interface IVRCImageDownload {}
 interface IVRCStringDownload {}
@@ -23,6 +24,88 @@ interface VRCAsyncGPUReadbackRequest {}
 interface ScreenUpdateData {}
 interface VRCCameraSettings {}
 interface PlayerDataInfo { readonly key: string; readonly state: int; }
+interface UdonVariableOptions { readonly sync?: "none" | "linear" | "smooth"; }
+type UdonVariableDecorator = <This, Value>(value: undefined, context: ClassFieldDecoratorContext<This, Value>) => void;
+declare function udonVariable<This, Value>(value: undefined, context: ClassFieldDecoratorContext<This, Value>): void;
+declare function udonVariable(options: UdonVariableOptions): UdonVariableDecorator;
+declare function udonVariable<T>(initialValue?: T, options?: UdonVariableOptions): T;
+declare function on(event: "OnEnable", handler: () => void): void;
+declare function on(event: "Start", handler: () => void): void;
+declare function on(event: "Update", handler: () => void): void;
+declare function on(event: "LateUpdate", handler: () => void): void;
+declare function on(event: "FixedUpdate", handler: () => void): void;
+declare function on(event: "PostLateUpdate", handler: () => void): void;
+declare function on(event: "OnDisable", handler: () => void): void;
+declare function on(event: "Interact", handler: () => void): void;
+declare function on(event: "OnPickup", handler: () => void): void;
+declare function on(event: "OnDrop", handler: () => void): void;
+declare function on(event: "OnPickupUseDown", handler: () => void): void;
+declare function on(event: "OnPickupUseUp", handler: () => void): void;
+declare function on(event: "OnPlayerJoined", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerLeft", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerRestored", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerRespawn", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerSuspendChanged", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnAvatarChanged", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnAvatarEyeHeightChanged", handler: (player: VRCPlayerApi, previousEyeHeight: float) => void): void;
+declare function on(event: "OnPlayerTriggerEnter", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerTriggerStay", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerTriggerExit", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerCollisionEnter", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerCollisionStay", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerCollisionExit", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerParticleCollision", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnControllerColliderHitPlayer", handler: (hit: ControllerColliderPlayerHit) => void): void;
+declare function on(event: "OnStationEntered", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnStationExited", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnOwnershipRequest", handler: (requestingPlayer: VRCPlayerApi, requestedOwner: VRCPlayerApi) => boolean): void;
+declare function on(event: "OnOwnershipTransferred", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnMasterTransferred", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPreSerialization", handler: () => void): void;
+declare function on(event: "OnPostSerialization", handler: (result: SerializationResult) => void): void;
+declare function on(event: "OnDeserialization", handler: () => void): void;
+declare function on(event: "OnDeserialization", handler: (result: DeserializationResult) => void): void;
+declare function on(event: "OnSpawn", handler: () => void): void;
+declare function on(event: "OnVideoReady", handler: () => void): void;
+declare function on(event: "OnVideoStart", handler: () => void): void;
+declare function on(event: "OnVideoPlay", handler: () => void): void;
+declare function on(event: "OnVideoPause", handler: () => void): void;
+declare function on(event: "OnVideoLoop", handler: () => void): void;
+declare function on(event: "OnVideoEnd", handler: () => void): void;
+declare function on(event: "OnVideoError", handler: (videoError: VideoError) => void): void;
+declare function on(event: "OnImageLoadSuccess", handler: (result: IVRCImageDownload) => void): void;
+declare function on(event: "OnImageLoadError", handler: (result: IVRCImageDownload) => void): void;
+declare function on(event: "OnStringLoadSuccess", handler: (result: IVRCStringDownload) => void): void;
+declare function on(event: "OnStringLoadError", handler: (result: IVRCStringDownload) => void): void;
+declare function on(event: "OnAsyncGpuReadbackComplete", handler: (request: VRCAsyncGPUReadbackRequest) => void): void;
+declare function on(event: "InputJump", handler: (value: boolean, args: UdonInputEventArgs) => void): void;
+declare function on(event: "InputUse", handler: (value: boolean, args: UdonInputEventArgs) => void): void;
+declare function on(event: "InputGrab", handler: (value: boolean, args: UdonInputEventArgs) => void): void;
+declare function on(event: "InputDrop", handler: (value: boolean, args: UdonInputEventArgs) => void): void;
+declare function on(event: "InputMoveHorizontal", handler: (value: float, args: UdonInputEventArgs) => void): void;
+declare function on(event: "InputMoveVertical", handler: (value: float, args: UdonInputEventArgs) => void): void;
+declare function on(event: "InputLookHorizontal", handler: (value: float, args: UdonInputEventArgs) => void): void;
+declare function on(event: "InputLookVertical", handler: (value: float, args: UdonInputEventArgs) => void): void;
+declare function on(event: "MidiNoteOn", handler: (channel: int, number: int, velocity: int) => void): void;
+declare function on(event: "MidiNoteOff", handler: (channel: int, number: int, velocity: int) => void): void;
+declare function on(event: "MidiControlChange", handler: (channel: int, number: int, value: int) => void): void;
+declare function on(event: "OnPersistenceUsageUpdated", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerDataStorageExceeded", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerDataStorageWarning", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerObjectStorageExceeded", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerObjectStorageWarning", handler: (player: VRCPlayerApi) => void): void;
+declare function on(event: "OnPlayerDataUpdated", handler: (player: VRCPlayerApi, infos: PlayerDataInfo[]) => void): void;
+declare function on(event: "OnScreenUpdate", handler: (data: ScreenUpdateData) => void): void;
+declare function on(event: "OnInputMethodChanged", handler: (inputMethod: VRCInputMethod) => void): void;
+declare function on(event: "OnLanguageChanged", handler: (language: string) => void): void;
+declare function on(event: "OnVRCPlusMassGift", handler: (gifter: VRCPlayerApi, numGifts: int) => void): void;
+declare function on(event: "OnVRCCameraSettingsChanged", handler: (camera: VRCCameraSettings) => void): void;
+declare function on(event: "OnVRCQualitySettingsChanged", handler: () => void): void;
+declare function on(event: string, handler: () => void): void;
+declare function emit(event: string): void;
+declare function emitDelayed(event: string, seconds: float): void;
+declare function emitDelayedFrames(event: string, frames: int): void;
+declare function emitNetwork(target: NetworkEventTarget, event: string): void;
 declare abstract class UdonBehaviour {
   readonly gameObject: GameObject;
   readonly transform: Transform;

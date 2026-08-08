@@ -1,21 +1,20 @@
 /// <reference path="../types/udon.d.ts" />
 
 /** Inspectorへ公開される値です。 */
-export let message: string = "Hello from TypeScript!";
+let message = udonVariable<string>("Hello from TypeScript!");
 
-/** @sync linear */
-export let speed: float = 2.5;
+let speed = udonVariable<float>(2.5, { sync: "linear" });
 
 function doubled(value: float): float {
   return value * 2;
 }
 
-export function start(): void {
+on("Start", () => {
   Debug.log(message);
   const player: VRCPlayerApi = Networking.localPlayer;
   player.setWalkSpeed(doubled(speed));
-}
+});
 
-export function onPlayerJoined(player: VRCPlayerApi): void {
+on("OnPlayerJoined", (player) => {
   Debug.log(player.displayName);
-}
+});

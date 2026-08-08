@@ -57,6 +57,25 @@ function eventMethodLines(): string[] {
   return lines;
 }
 
+function eventRegistrationLines(): string[] {
+  const lines: string[] = [];
+  for (const definition of events) {
+    const args = definition.parameters
+      .map((eventParameter) => `${eventParameter.name}: ${declarationType(eventParameter.type)}`)
+      .join(", ");
+    const returns = declarationType(definition.returns ?? "SystemVoid");
+    lines.push(`declare function on(event: "${eventMethodName(definition.sourceName)}", handler: (${args}) => ${returns}): void;`);
+  }
+  lines.push(
+    "declare function on(event: string, handler: () => void): void;",
+    "declare function emit(event: string): void;",
+    "declare function emitDelayed(event: string, seconds: float): void;",
+    "declare function emitDelayedFrames(event: string, frames: int): void;",
+    "declare function emitNetwork(target: NetworkEventTarget, event: string): void;"
+  );
+  return lines;
+}
+
 /** Generates editor declarations from the same extern registry used by the compiler. */
 export function generateDeclarations(definitions: readonly ExternDefinition[]): string {
   const staticGroups = new Map<string, ExternDefinition[]>();
@@ -110,6 +129,7 @@ export function generateDeclarations(definitions: readonly ExternDefinition[]): 
     "interface UdonInputEventArgs { readonly boolValue: bool; readonly floatValue: float; }",
     "declare enum VideoError { Unknown, InvalidURL, AccessDenied, PlayerError, RateLimited }",
     "declare enum VRCInputMethod { Keyboard, Mouse, Controller, Gaze, Vive = 5, Oculus, Count }",
+    "declare enum NetworkEventTarget { All, Owner, Others, Self }",
     "interface ControllerColliderPlayerHit { readonly player: VRCPlayerApi; }",
     "interface IVRCImageDownload {}",
     "interface IVRCStringDownload {}",
@@ -117,6 +137,12 @@ export function generateDeclarations(definitions: readonly ExternDefinition[]): 
     "interface ScreenUpdateData {}",
     "interface VRCCameraSettings {}",
     "interface PlayerDataInfo { readonly key: string; readonly state: int; }",
+    "interface UdonVariableOptions { readonly sync?: \"none\" | \"linear\" | \"smooth\"; }",
+    "type UdonVariableDecorator = <This, Value>(value: undefined, context: ClassFieldDecoratorContext<This, Value>) => void;",
+    "declare function udonVariable<This, Value>(value: undefined, context: ClassFieldDecoratorContext<This, Value>): void;",
+    "declare function udonVariable(options: UdonVariableOptions): UdonVariableDecorator;",
+    "declare function udonVariable<T>(initialValue?: T, options?: UdonVariableOptions): T;",
+    ...eventRegistrationLines(),
     "declare abstract class UdonBehaviour {",
     "  readonly gameObject: GameObject;",
     "  readonly transform: Transform;",

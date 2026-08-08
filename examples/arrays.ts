@@ -2,7 +2,8 @@
 
 export class ArrayExample extends UdonBehaviour {
   /** Inspectorで要素数と参照先を設定できます。 */
-  public targets!: GameObject[];
+  @udonVariable
+  targets!: GameObject[];
 
   private scores: int[] = [10, 20, 30];
 

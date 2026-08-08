@@ -8,10 +8,9 @@ function successful(source: string): string {
   return result.assembly;
 }
 
-test("emits exported data, sync metadata, events and externs", () => {
+test("emits legacy exported data, events and externs", () => {
   const assembly = successful(`
     export let message: string = "hello";
-    /** @sync linear */
     export let speed: float = 2.5;
     export function start(): void {
       Debug.log(message);
@@ -19,10 +18,137 @@ test("emits exported data, sync metadata, events and externs", () => {
     }
   `);
   assert.match(assembly, /\.export message/);
-  assert.match(assembly, /\.sync speed, linear/);
   assert.match(assembly, /\.export _start/);
   assert.match(assembly, /UnityEngineDebug\.__Log__SystemObject__SystemVoid/);
   assert.match(assembly, /VRCSDKBaseVRCPlayerApi\.__SetWalkSpeed__SystemSingle__SystemVoid/);
+});
+
+test("exposes top-level udonVariable calls with defaults and sync options", () => {
+  const assembly = successful(`
+    let speed = udonVariable<float>(2.5, { sync: "linear" });
+    let target = udonVariable<GameObject>(null);
+
+    export function start(): void {
+      Networking.localPlayer.setWalkSpeed(speed);
+      Debug.log(target);
+    }
+  `);
+  assert.match(assembly, /\.export speed/);
+  assert.match(assembly, /\.sync speed, linear/);
+  assert.match(assembly, /speed: %SystemSingle, 2\.5/);
+  assert.match(assembly, /\.export target/);
+  assert.match(assembly, /target: %UnityEngineGameObject, null/);
+});
+
+test("exposes decorated UdonBehaviour fields", () => {
+  const assembly = successful(`
+    export class PlayerSettings extends UdonBehaviour {
+      @udonVariable({ sync: "smooth" })
+      speed: float = 4.5;
+
+      @udonVariable
+      target: GameObject = null;
+
+      public Start(): void {
+        Debug.log(this.speed);
+        Debug.log(this.target);
+      }
+    }
+  `);
+  assert.match(assembly, /\.export speed/);
+  assert.match(assembly, /\.sync speed, smooth/);
+  assert.match(assembly, /speed: %SystemSingle, 4\.5/);
+  assert.match(assembly, /\.export target/);
+});
+
+test("reports invalid udonVariable declarations", () => {
+  const constant = compile("const speed = udonVariable<float>(2.5);", { fileName: "constant.ts" });
+  assert.equal(constant.diagnostics.length, 1);
+  assert.match(constant.diagnostics[0]!.message, /const/);
+
+  const classCall = compile(`
+    class Invalid extends UdonBehaviour {
+      speed: float = udonVariable<float>(2.5);
+    }
+  `, { fileName: "class-call.ts" });
+  assert.equal(classCall.diagnostics.length, 1);
+  assert.match(classCall.diagnostics[0]!.message, /@udonVariable/);
+
+  const invalidSync = compile(`
+    let speed = udonVariable<float>(2.5, { sync: "fast" });
+  `, { fileName: "sync.ts" });
+  assert.equal(invalidSync.diagnostics.length, 1);
+  assert.match(invalidSync.diagnostics[0]!.message, /linear.*smooth/);
+});
+
+test("registers standard and custom events with on", () => {
+  const assembly = successful(`
+    on("Start", () => {
+      emit("OpenDoor");
+    });
+
+    on("OpenDoor", () => {
+      Debug.log("first");
+    });
+
+    on("OpenDoor", () => {
+      Debug.log("second");
+    });
+
+    on("OnPlayerJoined", (player) => {
+      Debug.log(player.displayName);
+    });
+  `);
+  assert.equal((assembly.match(/\.export OpenDoor/g) ?? []).length, 1);
+  assert.match(assembly, /\.export _start/);
+  assert.match(assembly, /\.export _onPlayerJoined/);
+  assert.match(assembly, /playerJoinedPlayer: %VRCSDKBaseVRCPlayerApi/);
+  assert.match(assembly, /"first"/);
+  assert.match(assembly, /"second"/);
+});
+
+test("emits local, delayed and network custom event calls", () => {
+  const assembly = successful(`
+    let target = udonVariable<NetworkEventTarget>();
+
+    on("Start", () => {
+      emit("OpenDoor");
+      emitDelayed("OpenDoor", 1.5);
+      emitDelayedFrames("OpenDoor", 2);
+      emitNetwork(NetworkEventTarget.All, "OpenDoor");
+      emitNetwork(target, "OpenDoor");
+    });
+
+    on("OpenDoor", () => {});
+  `);
+  assert.match(assembly, /IUdonEventReceiver\.__SendCustomEvent__SystemString__SystemVoid/);
+  assert.match(assembly, /IUdonEventReceiver\.__SendCustomEventDelayedSeconds/);
+  assert.match(assembly, /IUdonEventReceiver\.__SendCustomEventDelayedFrames/);
+  assert.equal((assembly.match(/IUdonEventReceiver\.__SendCustomNetworkEvent/g) ?? []).length, 2);
+  assert.equal((assembly.match(/%VRCUdonCommonEnumsEventTiming/g) ?? []).length, 1);
+  assert.equal((assembly.match(/%SystemString, "OpenDoor"/g) ?? []).length, 1);
+  assert.match(assembly, /target: %VRCUdonCommonInterfacesNetworkEventTarget, null/);
+});
+
+test("reports invalid event API usage", () => {
+  const topLevelEmit = compile(`emit("Missing");`, { fileName: "top-level-emit.ts" });
+  assert.equal(topLevelEmit.diagnostics.length, 1);
+  assert.match(topLevelEmit.diagnostics[0]!.message, /ハンドラー内/);
+
+  const customArguments = compile(`on("Custom", (value: int) => {});`, { fileName: "custom-args.ts" });
+  assert.equal(customArguments.diagnostics.length, 1);
+  assert.match(customArguments.diagnostics[0]!.message, /引数は指定できません/);
+
+  const missing = compile(`on("Start", () => { emit("Missing"); });`, { fileName: "missing-event.ts" });
+  assert.equal(missing.diagnostics.length, 1);
+  assert.match(missing.diagnostics[0]!.message, /登録されていません/);
+
+  const owner = compile(`
+    on("Start", () => emitNetwork(NetworkEventTarget.Owner, "Custom"));
+    on("Custom", () => {});
+  `, { fileName: "owner.ts" });
+  assert.equal(owner.diagnostics.length, 1);
+  assert.match(owner.diagnostics[0]!.message, /All以外/);
 });
 
 test("lowers control flow and arithmetic operators", () => {
@@ -90,6 +216,11 @@ test("generates completion declarations from extern metadata", () => {
   }]);
   assert.match(declarations, /namespace Mathf/);
   assert.match(declarations, /function abs\(arg0: float\): float/);
+  assert.match(declarations, /function udonVariable<T>/);
+  assert.match(declarations, /UdonVariableDecorator/);
+  assert.match(declarations, /function on\(event: "OnPlayerJoined"/);
+  assert.match(declarations, /function emitDelayed/);
+  assert.match(declarations, /function emitNetwork/);
 });
 
 test("imports extern signatures from a Unity node dump", () => {

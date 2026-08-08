@@ -6,7 +6,7 @@ export interface ValueRef {
   type: UdonType;
 }
 
-export type FunctionNode = ts.FunctionDeclaration | ts.MethodDeclaration;
+export type FunctionNode = ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression;
 export type GlobalDeclaration = ts.VariableDeclaration | ts.PropertyDeclaration;
 export type SyncMode = "none" | "linear" | "smooth";
 

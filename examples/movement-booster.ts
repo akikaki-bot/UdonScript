@@ -6,17 +6,17 @@
  */
 
 /** ブースト中に表示するランプやパーティクル */
-export let indicator: GameObject;
+let indicator = udonVariable<GameObject>();
 
 /** 通常時の移動設定 */
-export let normalWalkSpeed: float = 2.0;
-export let normalRunSpeed: float = 4.0;
-export let normalJumpImpulse: float = 3.0;
+let normalWalkSpeed = udonVariable<float>(2.0);
+let normalRunSpeed = udonVariable<float>(4.0);
+let normalJumpImpulse = udonVariable<float>(3.0);
 
 /** ブースト時の移動設定 */
-export let boostedWalkSpeed: float = 4.0;
-export let boostedRunSpeed: float = 8.0;
-export let boostedJumpImpulse: float = 6.0;
+let boostedWalkSpeed = udonVariable<float>(4.0);
+let boostedRunSpeed = udonVariable<float>(8.0);
+let boostedJumpImpulse = udonVariable<float>(6.0);
 
 let boosted: bool = false;
 
@@ -38,12 +38,11 @@ function applyMovement(): void {
   }
 }
 
-export function start(): void {
+on("Start", () => {
   applyMovement();
-}
+});
 
-export function interact(): void {
+on("Interact", () => {
   boosted = !boosted;
   applyMovement();
-}
-
+});

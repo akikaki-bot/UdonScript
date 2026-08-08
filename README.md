@@ -89,26 +89,31 @@ npm run generate:types
 Udon VMにローカル変数はないため、TypeScriptのトップレベル変数・ローカル変数・一時値はすべて一意なUdon Heap変数へ変換されます。ユーザー関数はインライン展開されるので、通常の引数と戻り値を使えますが、再帰はコンパイルエラーです。
 
 ```ts
-export let message: string = "hello"; // .exportされ、Inspectorへ表示
-
-/** @sync linear */
-export let speed: float = 2.5;         // .sync speed, linear
+let message = udonVariable<string>("hello");
+let speed = udonVariable<float>(2.5, { sync: "linear" });
 
 function twice(value: float): float {
   return value * 2;
 }
 
-export function start(): void {        // Udonイベント _start
+on("Start", () => {                    // Udonイベント _start
   Debug.log(message);
   Networking.localPlayer.setWalkSpeed(twice(speed));
-}
+});
 ```
 
-クラス形式も同じようにコンパイルできます。`UdonBehaviour`を継承したクラスのpublicフィールドはInspectorへexportされ、privateフィールドは内部heapになります。イベント名は `start` と `Start` の両方を受け付けます。
+トップレベルでは`udonVariable<T>(初期値, オプション)`がUnity Inspectorへ公開する明示的な組み込み関数です。これは実行時の関数呼び出しではなく、コンパイラが`.export`と初期値へ変換します。Inspectorから変更できる値なので`const`では宣言できません。
+
+クラス形式では同じ意味を持つ`@udonVariable`デコレーターを使用します。新しいコードでは公開したいフィールドを明示してください。既存コードとの互換性のため、従来のpublicフィールドも現在はInspectorへexportされます。イベント名は `start` と `Start` の両方を受け付けます。
 
 ```ts
 export class Greeting extends UdonBehaviour {
-  public message: string = "hello";
+  @udonVariable
+  message: string = "hello";
+
+  @udonVariable({ sync: "linear" })
+  speed: float = 2.5;
+
   private count: int = 0;
 
   private twice(value: int): int { return value * 2; }
@@ -120,7 +125,36 @@ export class Greeting extends UdonBehaviour {
 }
 ```
 
-対応イベントには `start`, `onEnable`, `update`, `lateUpdate`, `fixedUpdate`, `interact`, `onPickup`, `onDrop`, `onPlayerJoined`, `onPlayerLeft`, `onOwnershipTransferred`, `onStationEntered`, `onStationExited` があります。未知の名前を持つ `export function` は引数なしカスタムイベントとして出力されます。
+トップレベルのイベントは`on(イベント名, ハンドラー)`で登録します。標準イベントは引数も型推論され、未知の名前は引数なしのカスタムイベントとして扱われます。同じイベントへ複数回登録した場合は、ソースに書いた順で実行されます。従来の`export function`形式も互換性のため利用できます。
+
+```ts
+on("OnPlayerJoined", (player) => {
+  Debug.log(player.displayName);
+});
+
+on("OpenDoor", () => {
+  Debug.log("open");
+});
+
+on("Interact", () => {
+  emit("OpenDoor");                 // このBehaviourですぐ実行
+  emitDelayed("OpenDoor", 1.5);     // 秒後（Updateタイミング）
+  emitDelayedFrames("OpenDoor", 2); // フレーム後（Updateタイミング）
+  emitNetwork(NetworkEventTarget.All, "OpenDoor");
+});
+```
+
+`emit`系のイベント名は文字列リテラルで指定し、同じファイル内で`on`登録したイベントを呼び出します。現在のネットワークイベントは引数なしだけに対応しています。`NetworkEventTarget.All`は直接指定できますが、`Owner`、`Others`、`Self`はraw UASMでenum値を表現できないため、Inspector公開変数にして選択します。
+
+```ts
+let networkTarget = udonVariable<NetworkEventTarget>();
+
+on("Interact", () => {
+  emitNetwork(networkTarget, "OpenDoor");
+});
+```
+
+これらは非同期関数やイベントごとのstate machineを生成せず、UdonのCustom Event APIを直接呼び出します。
 
 現在の制御構文は `if/else`, `while`, `for`, `break`, `continue`, `return`, 三項演算子、短絡する `&&` / `||` です。基本型は `bool`, `int`, `uint`, `float`, `double`, `string` と、定義済みUnity/VRChat型です。
 
@@ -129,15 +163,15 @@ export class Greeting extends UdonBehaviour {
 Udonの型別配列externへ変換し、配列リテラル、長さ指定の生成、要素取得、要素代入、`length`を使用できます。空の配列には型注釈が必要です。
 
 ```ts
-export let targets: GameObject[]; // Inspectorで要素を割り当て
+let targets = udonVariable<GameObject[]>(); // Inspectorで要素を割り当て
 
-export function start(): void {
+on("Start", () => {
   const scores: int[] = [10, 20, 30];
   const copy: int[] = new Array<int>(scores.length);
 
   copy[0] = scores[1];
   Debug.log(copy[0]);
-}
+});
 ```
 
 `Array<int>`形式の型注釈も`int[]`と同じ意味で使用できます。現在、spread、空要素、要素への`++`、要素を`ref`/`out`引数として渡す操作には対応していません。

@@ -31,7 +31,8 @@ const aliases: Readonly<Record<string, UdonType>> = {
   ScreenUpdateData: "VRCSDK3PlatformScreenUpdateData",
   VRCInputMethod: "VRCSDKBaseVRCInputMethod",
   VRCCameraSettings: "VRCSDK3RenderingVRCCameraSettings",
-  PlayerDataInfo: "VRCSDK3PersistencePlayerDataInfo"
+  PlayerDataInfo: "VRCSDK3PersistencePlayerDataInfo",
+  NetworkEventTarget: "VRCUdonCommonInterfacesNetworkEventTarget"
 };
 
 const reverseAliases = new Map<UdonType, string>();
