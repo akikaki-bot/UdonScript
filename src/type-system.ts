@@ -41,6 +41,11 @@ for (const [source, udon] of Object.entries(aliases)) {
 
 export function typeFromAnnotation(text: string): UdonType | undefined {
   const normalized = text.replace(/\s/g, "");
+  const genericArray = /^Array<(.+)>$/.exec(normalized);
+  if (genericArray) {
+    const element = typeFromAnnotation(genericArray[1]!);
+    return element ? `${element}Array` : undefined;
+  }
   if (normalized.endsWith("[]")) {
     const element = typeFromAnnotation(normalized.slice(0, -2));
     return element ? `${element}Array` : undefined;
@@ -58,6 +63,14 @@ export function sourceTypeName(type: UdonType): string {
 export function isNumeric(type: UdonType): boolean {
   return type === "SystemInt32" || type === "SystemUInt32" ||
     type === "SystemSingle" || type === "SystemDouble";
+}
+
+export function isArray(type: UdonType): boolean {
+  return type.endsWith("Array") && type.length > "Array".length;
+}
+
+export function arrayElementType(type: UdonType): UdonType | undefined {
+  return isArray(type) ? type.slice(0, -"Array".length) : undefined;
 }
 
 export function defaultValue(type: UdonType): string {

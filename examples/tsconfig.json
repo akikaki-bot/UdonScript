@@ -10,6 +10,7 @@
     "../types/udon.d.ts",
     "hello.ts",
     "movement-booster.ts",
-    "event-completion.ts"
+    "event-completion.ts",
+    "arrays.ts"
   ]
 }

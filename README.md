@@ -124,6 +124,24 @@ export class Greeting extends UdonBehaviour {
 
 現在の制御構文は `if/else`, `while`, `for`, `break`, `continue`, `return`, 三項演算子、短絡する `&&` / `||` です。基本型は `bool`, `int`, `uint`, `float`, `double`, `string` と、定義済みUnity/VRChat型です。
 
+### 配列
+
+Udonの型別配列externへ変換し、配列リテラル、長さ指定の生成、要素取得、要素代入、`length`を使用できます。空の配列には型注釈が必要です。
+
+```ts
+export let targets: GameObject[]; // Inspectorで要素を割り当て
+
+export function start(): void {
+  const scores: int[] = [10, 20, 30];
+  const copy: int[] = new Array<int>(scores.length);
+
+  copy[0] = scores[1];
+  Debug.log(copy[0]);
+}
+```
+
+`Array<int>`形式の型注釈も`int[]`と同じ意味で使用できます。現在、spread、空要素、要素への`++`、要素を`ref`/`out`引数として渡す操作には対応していません。
+
 ## extern
 
 `builtins/externs.json` は補完可能なTypeScript APIと、実際のUdon extern署名を結びます。追加APIは同じ形式のJSONを作り、CLIへ渡せます。
@@ -182,7 +200,7 @@ udon-ts <input.ts> [-o output.uasm] [--externs registry.json]
 
 ## 現在の制限
 
-- クラス、配列アクセス、オブジェクト生成、`switch`、`foreach` は未実装です。
+- 配列以外のオブジェクト生成、`switch`、`foreach` は未実装です。
 - Udon externの完全な公開一覧は公式にも存在しません。VRChat SDK/Udon Graphから取得した一覧を追加レジストリとして供給する設計です。
 - `.uasm` のUnityインポートと実機VM検証にはVRChat Worlds SDKが必要です。
 

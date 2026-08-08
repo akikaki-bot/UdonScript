@@ -221,3 +221,72 @@ test("accepts both OnDeserialization callback variants", () => {
   assert.deepEqual(withResult.diagnostics, []);
   assert.match(withResult.assembly, /deserializationResult: %VRCUdonCommonDeserializationResult/);
 });
+
+test("constructs arrays and supports element get, set and length", () => {
+  const assembly = successful(`
+    export let targets: GameObject[];
+    export let scores: int[] = [10, 20, 30];
+
+    export function start(): void {
+      const count: int = scores.length;
+      const first: int = scores[0];
+      scores[1] = first + 5;
+      const players: VRCPlayerApi[] = new Array<VRCPlayerApi>(count);
+      Debug.log(targets[0]);
+      Debug.log(players.length);
+    }
+  `);
+  assert.match(assembly, /scores: %SystemInt32Array/);
+  assert.match(assembly, /SystemInt32Array\.__ctor__SystemInt32__SystemInt32Array/);
+  assert.match(assembly, /SystemInt32Array\.__Get__SystemInt32__SystemInt32/);
+  assert.match(assembly, /SystemInt32Array\.__Set__SystemInt32_SystemInt32__SystemVoid/);
+  assert.match(assembly, /SystemInt32Array\.__get_Length__SystemInt32/);
+  assert.match(assembly, /VRCSDKBaseVRCPlayerApiArray\.__ctor__SystemInt32__VRCSDKBaseVRCPlayerApiArray/);
+  assert.match(assembly, /UnityEngineGameObjectArray\.__Get__SystemInt32__UnityEngineGameObject/);
+});
+
+test("infers array literals and accepts Array<T> annotations", () => {
+  const assembly = successful(`
+    export function start(): void {
+      const inferred = [1, 2, 3];
+      const generic: Array<int> = inferred;
+      Debug.log(generic[2]);
+    }
+  `);
+  assert.match(assembly, /inferred.*%SystemInt32Array/);
+  assert.match(assembly, /SystemInt32Array\.__Get__SystemInt32__SystemInt32/);
+});
+
+test("supports array fields through this access", () => {
+  const assembly = successful(`
+    export class Arrays extends UdonBehaviour {
+      private values: int[] = [1, 2, 3];
+
+      public Start(): void {
+        const last: int = this.values[this.values.length - 1];
+        this.values[0] = last;
+      }
+    }
+  `);
+  assert.match(assembly, /SystemInt32Array\.__get_Length__SystemInt32/);
+  assert.match(assembly, /SystemInt32Array\.__Get__SystemInt32__SystemInt32/);
+  assert.match(assembly, /SystemInt32Array\.__Set__SystemInt32_SystemInt32__SystemVoid/);
+});
+
+test("reports invalid array elements and untyped empty arrays", () => {
+  const wrongElement = compile(`
+    export function start(): void {
+      const values: int[] = [1, "oops"];
+    }
+  `, { fileName: "wrong-element.ts" });
+  assert.equal(wrongElement.diagnostics.length, 1);
+  assert.match(wrongElement.diagnostics[0]!.message, /string.*int/);
+
+  const empty = compile(`
+    export function start(): void {
+      const values = [];
+    }
+  `, { fileName: "empty-array.ts" });
+  assert.equal(empty.diagnostics.length, 1);
+  assert.match(empty.diagnostics[0]!.message, /型を推論|型注釈/);
+});

@@ -1,5 +1,17 @@
 import ts from "typescript";
+import { ArrayLowerer, arrayExterns } from "./array-lowering.js";
+import { AssemblyBuilder, type AllocationOptions, sanitizeSymbol } from "./assembly-builder.js";
+import {
+  type FlowContext,
+  type FunctionInfo,
+  type FunctionNode,
+  type GlobalDeclaration,
+  Scope,
+  type SyncMode,
+  type ValueRef
+} from "./compiler-context.js";
 import { eventsBySourceName } from "./events.js";
+import { ExpressionTypeInferer } from "./expression-type-inference.js";
 import { binaryExtern, ExternRegistry, unaryExtern } from "./extern-registry.js";
 import type {
   CompileOptions,
@@ -9,44 +21,7 @@ import type {
   ExternDefinition,
   UdonType
 } from "./model.js";
-import { defaultValue, escapeString, isNumeric, sourceTypeName, typeFromAnnotation } from "./type-system.js";
-
-interface HeapValue {
-  symbol: string;
-  type: UdonType;
-  initial: string;
-  exported: boolean;
-  sync?: "none" | "linear" | "smooth";
-}
-
-interface ValueRef {
-  symbol: string;
-  type: UdonType;
-}
-
-type FunctionNode = ts.FunctionDeclaration | ts.MethodDeclaration;
-type GlobalDeclaration = ts.VariableDeclaration | ts.PropertyDeclaration;
-
-interface FunctionInfo {
-  node: FunctionNode;
-  name: string;
-  returnType: UdonType;
-  entry: boolean;
-}
-
-interface FlowContext {
-  breakLabel?: string;
-  continueLabel?: string;
-  returnLabel: string;
-  returnValue?: ValueRef;
-}
-
-class Scope {
-  private readonly values = new Map<string, ValueRef>();
-  constructor(readonly parent?: Scope) {}
-  set(name: string, value: ValueRef): void { this.values.set(name, value); }
-  get(name: string): ValueRef | undefined { return this.values.get(name) ?? this.parent?.get(name); }
-}
+import { defaultValue, escapeString, isArray, isNumeric, sourceTypeName, typeFromAnnotation } from "./type-system.js";
 
 class CompileFailure extends Error {
   constructor(message: string, readonly node: ts.Node) { super(message); }
@@ -55,21 +30,35 @@ class CompileFailure extends Error {
 class Compiler {
   private readonly sourceFile: ts.SourceFile;
   private readonly registry: ExternRegistry;
+  private readonly typeInference: ExpressionTypeInferer;
+  private readonly arrays: ArrayLowerer;
   private readonly diagnostics: Diagnostic[] = [];
-  private readonly heap: HeapValue[] = [];
-  private readonly usedSymbols = new Set<string>();
+  private readonly assembly = new AssemblyBuilder();
   private readonly functions = new Map<string, FunctionInfo>();
   private readonly entries: FunctionInfo[] = [];
   private readonly globalScope = new Scope();
   private readonly globalInitializers: Array<{ declaration: GlobalDeclaration; target: ValueRef }> = [];
-  private readonly code: string[] = [];
   private readonly callStack: string[] = [];
-  private serial = 0;
 
   constructor(private readonly source: string, private readonly options: CompileOptions) {
     const fileName = options.fileName ?? "input.ts";
     this.sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     this.registry = new ExternRegistry(options.externs);
+    this.typeInference = new ExpressionTypeInferer({
+      functionReturnType: (name) => this.functions.get(name)?.returnType,
+      externReturnType: (owner, member, kind) => this.registry.find(owner, member, kind)?.returns,
+      staticOwner: (node) => this.staticOwnerFromExpression(node),
+      requireType: (node) => this.requireType(node)
+    });
+    this.arrays = new ArrayLowerer({
+      compileExpression: (node, scope, expected, flow) => this.compileExpression(node, scope, expected, flow),
+      inferExpressionType: (node, scope) => this.inferExpressionType(node, scope),
+      allocate: (base, type, initial) => this.allocate(base, type, initial),
+      emitExtern: (signature, args, output) => this.emitExtern(signature, args, output),
+      assertAssignable: (actual, expected, node) => this.assertAssignable(actual, expected, node),
+      requireType: (node) => this.requireType(node),
+      fail: (message, node) => this.fail(message, node)
+    });
   }
 
   compile(): CompileResult {
@@ -103,7 +92,7 @@ class Compiler {
       this.emit("JUMP, 0xFFFFFFFC");
     }
 
-    return { assembly: this.renderAssembly(), diagnostics: this.diagnostics };
+    return { assembly: this.assembly.render(), diagnostics: this.diagnostics };
   }
 
   private collectDeclarations(): void {
@@ -141,7 +130,7 @@ class Compiler {
     }
   }
 
-  private collectGlobal(declaration: GlobalDeclaration, exported: boolean, sync?: "none" | "linear" | "smooth"): void {
+  private collectGlobal(declaration: GlobalDeclaration, exported: boolean, sync?: SyncMode): void {
     this.tryCompile(declaration, () => {
       if (!ts.isIdentifier(declaration.name)) this.fail("分割代入はまだフィールドでは使えません", declaration.name);
       const name = declaration.name.text;
@@ -175,7 +164,7 @@ class Compiler {
     const node = info.node;
     if (!node.body) return;
     const sourceName = info.name;
-    const assemblyName = event?.assemblyName ?? this.sanitize(sourceName);
+    const assemblyName = event?.assemblyName ?? sanitizeSymbol(sourceName);
     if (!event && this.eventForName(sourceName)) {
       const arities = this.eventDefinitionsForName(sourceName).map((definition) => definition.parameters.length).join(" / ");
       this.fail(`イベント '${sourceName}' の引数は ${arities} 個必要です`, node);
@@ -368,6 +357,9 @@ class Compiler {
     if (node.kind === ts.SyntaxKind.NullKeyword) {
       return this.allocate("null", expected && expected !== "SystemVoid" ? expected : "SystemObject", "null");
     }
+    if (ts.isArrayLiteralExpression(node)) return this.arrays.compileLiteral(node, scope, expected, flow);
+    if (ts.isNewExpression(node)) return this.arrays.compileNew(node, scope, expected, flow);
+    if (ts.isElementAccessExpression(node)) return this.arrays.compileGet(node, scope, expected, flow);
     if (ts.isBinaryExpression(node)) return this.compileBinary(node, scope, expected, flow);
     if (ts.isPrefixUnaryExpression(node)) {
       if (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken) {
@@ -413,6 +405,9 @@ class Compiler {
 
   private compileBinary(node: ts.BinaryExpression, scope: Scope, expected: UdonType | undefined, flow: FlowContext): ValueRef {
     const operator = ts.tokenToString(node.operatorToken.kind) ?? "";
+    if (operator === "=" && ts.isElementAccessExpression(node.left)) {
+      return this.arrays.compileSet(node.left, node.right, scope, expected, flow);
+    }
     if (operator === "=" && ts.isPropertyAccessExpression(node.left)) {
       return this.compilePropertySet(node.left, node.right, scope, expected, flow);
     }
@@ -547,6 +542,15 @@ class Compiler {
       this.assertAssignable(value.type, expected, node);
       return value;
     }
+    const receiverType = this.inferExpressionType(node.expression, scope);
+    if (member === "length" && receiverType && isArray(receiverType)) {
+      const externs = arrayExterns(receiverType)!;
+      const receiver = this.compileExpression(node.expression, scope, receiverType, flow);
+      const output = this.allocate("length", "SystemInt32");
+      this.emitExtern(externs.length, [receiver], output);
+      this.assertAssignable(output.type, expected, node);
+      return output;
+    }
     let receiver: ValueRef | undefined;
     let owner: UdonType | undefined;
     owner = this.staticOwnerFromExpression(node.expression);
@@ -616,45 +620,11 @@ class Compiler {
   }
 
   private inferExpressionType(node: ts.Expression, scope: Scope): UdonType | undefined {
-    if (ts.isParenthesizedExpression(node)) return this.inferExpressionType(node.expression, scope);
-    if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) return this.requireType(node.type);
-    if (ts.isIdentifier(node)) return scope.get(node.text)?.type;
-    if (ts.isNumericLiteral(node)) return this.inferLiteralType(node);
-    if (ts.isStringLiteralLike(node)) return "SystemString";
-    if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) return "SystemBoolean";
-    if (node.kind === ts.SyntaxKind.NullKeyword) return "SystemObject";
-    if (ts.isConditionalExpression(node)) return this.inferExpressionType(node.whenTrue, scope);
-    if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
-      if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) return "SystemBoolean";
-      return this.inferExpressionType(node.operand, scope);
-    }
-    if (ts.isBinaryExpression(node)) {
-      const operator = ts.tokenToString(node.operatorToken.kind) ?? "";
-      if (["==", "===", "!=", "!==", "<", "<=", ">", ">=", "&&", "||"].includes(operator)) return "SystemBoolean";
-      return this.inferExpressionType(node.left, scope);
-    }
-    if (ts.isCallExpression(node)) {
-      if (ts.isIdentifier(node.expression)) return this.functions.get(node.expression.text)?.returnType;
-      if (ts.isPropertyAccessExpression(node.expression)) {
-        const owner = this.staticOwnerFromExpression(node.expression.expression)
-          ?? this.inferExpressionType(node.expression.expression, scope);
-        return owner ? this.registry.find(owner, node.expression.name.text, "method")?.returns : undefined;
-      }
-    }
-    if (ts.isPropertyAccessExpression(node)) {
-      const owner = this.staticOwnerFromExpression(node.expression)
-        ?? this.inferExpressionType(node.expression, scope);
-      return owner ? this.registry.find(owner, node.name.text, "get")?.returns : undefined;
-    }
-    return undefined;
+    return this.typeInference.infer(node, scope);
   }
 
   private inferLiteralType(node: ts.Expression): UdonType | undefined {
-    if (ts.isNumericLiteral(node)) return node.text.includes(".") || /e/i.test(node.text) ? "SystemSingle" : "SystemInt32";
-    if (ts.isStringLiteralLike(node)) return "SystemString";
-    if (node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) return "SystemBoolean";
-    if (node.kind === ts.SyntaxKind.NullKeyword) return "SystemObject";
-    return undefined;
+    return this.typeInference.inferLiteral(node);
   }
 
   private selectExtern(owner: UdonType, member: string, kind: "method" | "get" | "set", args: readonly ts.Expression[], scope: Scope, node: ts.Node): ExternDefinition {
@@ -743,56 +713,18 @@ class Compiler {
   }
 
   private emitExtern(signature: string, args: readonly ValueRef[], output?: ValueRef): void {
-    for (const arg of args) this.emit(`PUSH, ${arg.symbol}`);
-    if (output) this.emit(`PUSH, ${output.symbol}`);
-    this.emit(`EXTERN, ${escapeString(signature)}`);
+    this.assembly.emitExtern(signature, args, output);
   }
 
-  private allocate(base: string, type: UdonType, initial = defaultValue(type), options: { exported?: boolean; sync?: "none" | "linear" | "smooth"; exact?: boolean } = {}): ValueRef {
-    let symbol = this.sanitize(base);
-    if (!options.exact || this.usedSymbols.has(symbol)) {
-      const root = symbol;
-      do { symbol = `${root}_${this.serial++}`; } while (this.usedSymbols.has(symbol));
-    }
-    if (this.usedSymbols.has(symbol)) {
-      const existing = this.heap.find((value) => value.symbol === symbol);
-      if (existing?.type === type) return { symbol, type };
-      throw new Error(`heap symbol collision: ${symbol}`);
-    }
-    this.usedSymbols.add(symbol);
-    this.heap.push({
-      symbol,
-      type,
-      initial,
-      exported: options.exported ?? false,
-      ...(options.sync ? { sync: options.sync } : {})
-    });
-    return { symbol, type };
-  }
-
-  private renderAssembly(): string {
-    const lines = [".data_start"];
-    for (const value of this.heap) {
-      if (value.exported) lines.push(`    .export ${value.symbol}`);
-      if (value.sync) lines.push(`    .sync ${value.symbol}, ${value.sync}`);
-      lines.push(`    ${value.symbol}: %${value.type}, ${value.initial}`);
-    }
-    lines.push(".data_end", "", ".code_start");
-    lines.push(...this.code.map((line) => line.endsWith(":") || line.startsWith(".") || line.startsWith("#") ? line : `    ${line}`));
-    lines.push(".code_end", "");
-    return lines.join("\n");
+  private allocate(base: string, type: UdonType, initial = defaultValue(type), options: AllocationOptions = {}): ValueRef {
+    return this.assembly.allocate(base, type, initial, options);
   }
 
   private label(label: string): void {
-    if (this.code.at(-1)?.endsWith(":")) this.emit("NOP");
-    this.code.push(`${label}:`);
+    this.assembly.label(label);
   }
-  private emit(line: string): void { this.code.push(line); }
-  private uniqueLabel(base: string): string { return `__${this.sanitize(base)}_${this.serial++}`; }
-  private sanitize(name: string): string {
-    const value = name.replace(/[^A-Za-z0-9_]/g, "_");
-    return /^[A-Za-z_]/.test(value) ? value : `_${value}`;
-  }
+  private emit(line: string): void { this.assembly.emit(line); }
+  private uniqueLabel(base: string): string { return this.assembly.uniqueLabel(base); }
   private hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
     return ts.canHaveModifiers(node) && (ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) ?? false);
   }
