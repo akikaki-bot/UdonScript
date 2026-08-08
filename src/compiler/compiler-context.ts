@@ -4,6 +4,8 @@ import type { UdonType } from "../model.js";
 export interface ValueRef {
   symbol: string;
   type: UdonType;
+  /** Compile-time identity for a referenced UdonScript behaviour. */
+  behaviorType?: string;
 }
 
 export type FunctionNode = ts.FunctionDeclaration | ts.MethodDeclaration | ts.ArrowFunction | ts.FunctionExpression;
@@ -15,6 +17,7 @@ export interface FunctionInfo {
   name: string;
   returnType: UdonType;
   entry: boolean;
+  entryKind?: "event" | "method";
 }
 
 export interface FlowContext {

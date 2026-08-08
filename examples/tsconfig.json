@@ -11,6 +11,9 @@
     "hello.ts",
     "movement-booster.ts",
     "event-completion.ts",
-    "arrays.ts"
+    "arrays.ts",
+    "modules/math.ts",
+    "modules/door-controller.ts",
+    "modules/door-button.ts"
   ]
 }

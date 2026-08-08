@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -39,6 +39,31 @@ test("CLI reports malformed extern JSON without an internal TypeError", () => {
     assert.equal(result.status, 1);
     assert.match(result.stderr, /expected an extern definition array or a Unity node dump/);
     assert.doesNotMatch(result.stderr, /TypeError|at main/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLI emits the entry and every relative TypeScript dependency", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "udon-ts-cli-"));
+  try {
+    const entry = resolve(directory, "main.ts");
+    const dependency = resolve(directory, "math.ts");
+    const customEntryOutput = resolve(directory, "program.uasm");
+    writeFileSync(dependency, `export function twice(value: float): float { return value * 2; }`, "utf8");
+    writeFileSync(entry, `
+      import { twice } from "./math.js";
+      on("Start", () => Debug.log(twice(2.0)));
+    `, "utf8");
+
+    const result = spawnSync(process.execPath, [
+      resolve("dist/cli.js"), entry, "-o", customEntryOutput
+    ], { cwd: resolve("."), encoding: "utf8" });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(customEntryOutput), true);
+    assert.equal(existsSync(resolve(directory, "math.uasm")), true);
+    assert.match(readFileSync(customEntryOutput, "utf8"), /SystemSingle\.__op_Multiplication/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

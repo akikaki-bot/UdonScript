@@ -1,0 +1,108 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, resolve } from "node:path";
+import test from "node:test";
+import { compileProject } from "../src/index.js";
+
+test("resolves imports, emits every module and lowers cross-behaviour calls", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "udonscript-project-"));
+  try {
+    const entry = resolve(directory, "main.ts");
+    writeFileSync(resolve(directory, "math.ts"), `
+      export function twice(value: float): float {
+        return value * 2;
+      }
+    `, "utf8");
+    writeFileSync(resolve(directory, "door.ts"), `
+      export class Door extends UdonBehaviour {
+        @udonVariable
+        opened: bool = false;
+
+        public SetOpened(value: bool): bool {
+          this.opened = value;
+          return this.opened;
+        }
+      }
+    `, "utf8");
+    writeFileSync(entry, `
+      import { Door } from "./door.js";
+      import { twice } from "./math.js";
+
+      let door = udonVariable<Door>();
+
+      on("Interact", () => {
+        const linkedDoor = door;
+        const scaled = twice(1.0);
+        const opened: bool = linkedDoor.SetOpened(scaled > 1.0);
+        linkedDoor.opened = opened;
+        Debug.log(opened);
+        Debug.log(linkedDoor.opened);
+      });
+    `, "utf8");
+
+    const result = compileProject(entry);
+    assert.deepEqual(result.diagnostics, []);
+    assert.deepEqual(
+      result.artifacts.map((artifact) => basename(artifact.sourceFile)).sort(),
+      ["door.ts", "main.ts", "math.ts"]
+    );
+    const main = result.artifacts.find((artifact) => basename(artifact.sourceFile) === "main.ts")!.assembly;
+    const door = result.artifacts.find((artifact) => basename(artifact.sourceFile) === "door.ts")!.assembly;
+    const math = result.artifacts.find((artifact) => basename(artifact.sourceFile) === "math.ts")!.assembly;
+    assert.match(main, /SystemSingle\.__op_Multiplication/);
+    assert.match(main, /__SetProgramVariable__SystemString_SystemObject__SystemVoid/);
+    assert.match(main, /__SendCustomEvent__SystemString__SystemVoid/);
+    assert.match(main, /__GetProgramVariable__SystemString__SystemObject/);
+    assert.match(door, /\.export SetOpened/);
+    assert.match(door, /\.export __method_SetOpened_arg0_value/);
+    assert.match(door, /\.export __method_SetOpened_return/);
+    assert.doesNotMatch(door, /SystemSingle\.__op_Multiplication/);
+    assert.doesNotMatch(math, /SetOpened|Interact/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("rejects runtime imports outside the relative TypeScript graph", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "udonscript-project-"));
+  try {
+    const entry = resolve(directory, "main.ts");
+    writeFileSync(entry, `import { value } from "some-package"; on("Start", () => Debug.log(value));`, "utf8");
+    const result = compileProject(entry);
+    assert.equal(result.artifacts.length, 0);
+    assert.match(result.diagnostics[0]!.message, /相対import/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("resolves transitive re-exports and anonymous default functions", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "udonscript-project-"));
+  try {
+    const entry = resolve(directory, "main.ts");
+    writeFileSync(resolve(directory, "math.ts"), `
+      export default function(value: int): int { return value * 3; }
+    `, "utf8");
+    writeFileSync(resolve(directory, "api.ts"), `
+      export { default as triple } from "./math.js";
+    `, "utf8");
+    writeFileSync(entry, `
+      import { triple } from "./api.js";
+      on("Start", () => {
+        const result = triple(4);
+        Debug.log(result);
+      });
+    `, "utf8");
+
+    const result = compileProject(entry);
+    assert.deepEqual(result.diagnostics, []);
+    assert.deepEqual(
+      result.artifacts.map((artifact) => basename(artifact.sourceFile)),
+      ["math.ts", "api.ts", "main.ts"]
+    );
+    assert.match(result.artifacts[2]!.assembly, /SystemInt32\.__op_Multiplication/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

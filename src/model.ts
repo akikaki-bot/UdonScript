@@ -51,6 +51,16 @@ export interface CompileResult {
   diagnostics: Diagnostic[];
 }
 
+export interface CompileArtifact {
+  sourceFile: string;
+  assembly: string;
+}
+
+export interface ProjectCompileResult {
+  artifacts: CompileArtifact[];
+  diagnostics: Diagnostic[];
+}
+
 /** Raw node metadata exported from a VRChat SDK Unity project. */
 export interface UdonNodeDumpEntry {
   fullName: string;

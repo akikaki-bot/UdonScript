@@ -8,7 +8,7 @@ function successful(source: string): string {
   return result.assembly;
 }
 
-test("emits legacy exported data, events and externs", () => {
+test("treats export as module syntax without legacy Udon exposure", () => {
   const assembly = successful(`
     export let message: string = "hello";
     export let speed: float = 2.5;
@@ -17,10 +17,9 @@ test("emits legacy exported data, events and externs", () => {
       Networking.localPlayer.setWalkSpeed(speed);
     }
   `);
-  assert.match(assembly, /\.export message/);
-  assert.match(assembly, /\.export _start/);
-  assert.match(assembly, /UnityEngineDebug\.__Log__SystemObject__SystemVoid/);
-  assert.match(assembly, /VRCSDKBaseVRCPlayerApi\.__SetWalkSpeed__SystemSingle__SystemVoid/);
+  assert.doesNotMatch(assembly, /\.export message/);
+  assert.doesNotMatch(assembly, /\.export _start/);
+  assert.doesNotMatch(assembly, /UnityEngineDebug\.__Log__SystemObject__SystemVoid/);
 });
 
 test("exposes top-level udonVariable calls with defaults and sync options", () => {
@@ -28,10 +27,10 @@ test("exposes top-level udonVariable calls with defaults and sync options", () =
     let speed = udonVariable<float>(2.5, { sync: "linear" });
     let target = udonVariable<GameObject>(null);
 
-    export function start(): void {
+    on("Start", () => {
       Networking.localPlayer.setWalkSpeed(speed);
       Debug.log(target);
-    }
+    });
   `);
   assert.match(assembly, /\.export speed/);
   assert.match(assembly, /\.sync speed, linear/);
@@ -49,6 +48,8 @@ test("exposes decorated UdonBehaviour fields", () => {
       @udonVariable
       target: GameObject = null;
 
+      public internalCount: int = 3;
+
       public Start(): void {
         Debug.log(this.speed);
         Debug.log(this.target);
@@ -59,6 +60,7 @@ test("exposes decorated UdonBehaviour fields", () => {
   assert.match(assembly, /\.sync speed, smooth/);
   assert.match(assembly, /speed: %SystemSingle, 4\.5/);
   assert.match(assembly, /\.export target/);
+  assert.doesNotMatch(assembly, /\.export internalCount/);
 });
 
 test("reports invalid udonVariable declarations", () => {
@@ -153,12 +155,12 @@ test("reports invalid event API usage", () => {
 
 test("lowers control flow and arithmetic operators", () => {
   const assembly = successful(`
-    export function update(): void {
+    on("Update", () => {
       let i: int = 0;
       while (i < 3) {
         i++;
       }
-    }
+    });
   `);
   assert.match(assembly, /SystemInt32\.__op_LessThan/);
   assert.match(assembly, /SystemInt32\.__op_Addition/);
@@ -168,10 +170,10 @@ test("lowers control flow and arithmetic operators", () => {
 test("inlines typed user functions", () => {
   const assembly = successful(`
     function twice(value: float): float { return value * 2; }
-    export function start(): void {
+    on("Start", () => {
       const result: float = twice(1.5);
       Debug.log(result);
-    }
+    });
   `);
   assert.match(assembly, /twice_value/);
   assert.match(assembly, /SystemSingle\.__op_Multiplication/);
@@ -180,9 +182,9 @@ test("inlines typed user functions", () => {
 
 test("maps event parameters to their required heap symbols", () => {
   const assembly = successful(`
-    export function onPlayerJoined(player: VRCPlayerApi): void {
+    on("OnPlayerJoined", (player: VRCPlayerApi) => {
       Debug.log(player.displayName);
-    }
+    });
   `);
   assert.match(assembly, /playerJoinedPlayer: %VRCSDKBaseVRCPlayerApi/);
   assert.match(assembly, /\.export _onPlayerJoined/);
@@ -190,15 +192,15 @@ test("maps event parameters to their required heap symbols", () => {
 
 test("supports raw extern escape hatch", () => {
   const assembly = successful(`
-    export function start(): void {
+    on("Start", () => {
       let x: float = extern<float>("UnityEngineMathf.__Abs__SystemSingle__SystemSingle", -2.0);
-    }
+    });
   `);
   assert.match(assembly, /UnityEngineMathf\.__Abs__SystemSingle__SystemSingle/);
 });
 
 test("reports type errors with a source location", () => {
-  const result = compile(`export function start(): void { let x: int = "oops"; }`, { fileName: "bad.ts" });
+  const result = compile(`on("Start", () => { let x: int = "oops"; });`, { fileName: "bad.ts" });
   assert.equal(result.diagnostics.length, 1);
   assert.match(result.diagnostics[0]!.message, /string.*int/);
   assert.equal(result.diagnostics[0]!.file, "bad.ts");
@@ -243,6 +245,7 @@ test("imports extern signatures from a Unity node dump", () => {
 test("compiles UdonBehaviour classes, fields, this access and methods", () => {
   const assembly = successful(`
     export class Greeting extends UdonBehaviour {
+      @udonVariable
       public message: string = "hello";
       private count: int = 0;
 
@@ -262,11 +265,11 @@ test("compiles UdonBehaviour classes, fields, this access and methods", () => {
 
 test("uses real Udon externs for booleans and string concatenation", () => {
   const assembly = successful(`
-    export function start(): void {
+    on("Start", () => {
       const enabled: bool = !false;
       const text: string = "a" + "b";
       if (enabled) Debug.log(text);
-    }
+    });
   `);
   assert.match(assembly, /SystemBoolean\.__op_UnaryNegation__SystemBoolean__SystemBoolean/);
   assert.match(assembly, /SystemString\.__Concat__SystemString_SystemString__SystemString/);
@@ -281,7 +284,7 @@ test("resolves extern overloads by arity and argument type", () => {
     owner: "UnityEngineMathf", member: "abs", signature: "UnityEngineMathf.__Abs__SystemSingle__SystemSingle",
     parameters: [{ type: "SystemSingle" }], returns: "SystemSingle", static: true, kind: "method" as const
   }];
-  const result = compile(`export function start(): void { const x: int = Mathf.abs(-2); }`, { externs });
+  const result = compile(`on("Start", () => { const x: int = Mathf.abs(-2); });`, { externs });
   assert.deepEqual(result.diagnostics, []);
   assert.match(result.assembly, /__Abs__SystemInt32__SystemInt32/);
   assert.doesNotMatch(result.assembly, /__Abs__SystemSingle__SystemSingle/);
@@ -294,10 +297,10 @@ test("passes ref and out extern parameters as writable heap addresses", () => {
     returns: "SystemBoolean", static: true, kind: "method" as const
   }];
   const result = compile(`
-    export function start(): void {
+    on("Start", () => {
       let value: int = 0;
       let ok: bool = Udon.SystemInt32.tryParse("42", value);
-    }
+    });
   `, { externs });
   assert.deepEqual(result.diagnostics, []);
   const externAt = result.assembly.indexOf("SystemInt32.__TryParse");
@@ -346,8 +349,8 @@ test("supports the boolean return value of OnOwnershipRequest", () => {
 });
 
 test("accepts both OnDeserialization callback variants", () => {
-  const withoutResult = compile(`export function OnDeserialization(): void {}`, { fileName: "simple.ts" });
-  const withResult = compile(`export function OnDeserialization(result: DeserializationResult): void { Debug.log(result); }`, { fileName: "result.ts" });
+  const withoutResult = compile(`on("OnDeserialization", () => {});`, { fileName: "simple.ts" });
+  const withResult = compile(`on("OnDeserialization", (result: DeserializationResult) => { Debug.log(result); });`, { fileName: "result.ts" });
   assert.deepEqual(withoutResult.diagnostics, []);
   assert.deepEqual(withResult.diagnostics, []);
   assert.match(withResult.assembly, /deserializationResult: %VRCUdonCommonDeserializationResult/);
@@ -355,17 +358,17 @@ test("accepts both OnDeserialization callback variants", () => {
 
 test("constructs arrays and supports element get, set and length", () => {
   const assembly = successful(`
-    export let targets: GameObject[];
-    export let scores: int[] = [10, 20, 30];
+    let targets = udonVariable<GameObject[]>();
+    let scores: int[] = [10, 20, 30];
 
-    export function start(): void {
+    on("Start", () => {
       const count: int = scores.length;
       const first: int = scores[0];
       scores[1] = first + 5;
       const players: VRCPlayerApi[] = new Array<VRCPlayerApi>(count);
       Debug.log(targets[0]);
       Debug.log(players.length);
-    }
+    });
   `);
   assert.match(assembly, /scores: %SystemInt32Array/);
   assert.match(assembly, /SystemInt32Array\.__ctor__SystemInt32__SystemInt32Array/);
@@ -378,11 +381,11 @@ test("constructs arrays and supports element get, set and length", () => {
 
 test("infers array literals and accepts Array<T> annotations", () => {
   const assembly = successful(`
-    export function start(): void {
+    on("Start", () => {
       const inferred = [1, 2, 3];
       const generic: Array<int> = inferred;
       Debug.log(generic[2]);
-    }
+    });
   `);
   assert.match(assembly, /inferred.*%SystemInt32Array/);
   assert.match(assembly, /SystemInt32Array\.__Get__SystemInt32__SystemInt32/);
@@ -406,17 +409,17 @@ test("supports array fields through this access", () => {
 
 test("reports invalid array elements and untyped empty arrays", () => {
   const wrongElement = compile(`
-    export function start(): void {
+    on("Start", () => {
       const values: int[] = [1, "oops"];
-    }
+    });
   `, { fileName: "wrong-element.ts" });
   assert.equal(wrongElement.diagnostics.length, 1);
   assert.match(wrongElement.diagnostics[0]!.message, /string.*int/);
 
   const empty = compile(`
-    export function start(): void {
+    on("Start", () => {
       const values = [];
-    }
+    });
   `, { fileName: "empty-array.ts" });
   assert.equal(empty.diagnostics.length, 1);
   assert.match(empty.diagnostics[0]!.message, /型を推論|型注釈/);

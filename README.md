@@ -44,7 +44,7 @@ udon-ts --externs ./my-externs.json --emit-types ./types/udon.generated.d.ts
 
 2. `unity/Editor/UdonTsCompiler.cs`と`unity/Editor/UdonTsNodeExporter.cs`を、VRChat Worldsプロジェクトの`Assets/Editor`へコピーします。
 3. Unityを再起動し、Projectウィンドウで`Assets`内の`.ts`を選択します。
-4. 右クリックの`UdonScript > Compile selected TypeScript`を実行します。同じ場所に同名の`.uasm`が生成され、UnityがUdon Program Assetとして自動インポートします。
+4. 右クリックの`UdonScript > Compile selected TypeScript`を実行します。選択したファイルと相対importされた各`.ts`の隣に、同名の`.uasm`が生成されます。Unityは生成された全ファイルをUdon Program Assetとして自動インポートします。
 5. 初回だけ、生成された`.uasm`をGameObjectの`Udon Behaviour > Program Source`へドラッグします。またはGameObjectを選び、`VRChat SDK > UdonScript > Attach last compiled program to selected GameObject`を実行します。Udon Behaviourがなければ自動で追加されます。
 
 以後は同じ`.ts`を再コンパイルすれば、同じ`.uasm`が更新されるため割り当て直しは不要です。コンパイル後、公開フィールドはUdon BehaviourのInspectorで設定できます。
@@ -52,6 +52,52 @@ udon-ts --externs ./my-externs.json --emit-types ./types/udon.generated.d.ts
 Unityから`udon-ts`を発見できない場合は、`VRChat SDK > UdonScript > Set CLI path...`で`udon-ts.cmd`を指定してください。Unityの起動後に`npm link`した場合は、Unityを再起動するとPATHも更新されます。
 
 SDKから出力したnode dumpや追加externを使う場合は、`VRChat SDK > UdonScript > Set extern registry...`でJSONを指定します。
+
+## import / export
+
+`import`と`export`は通常のTypeScriptモジュール構文として使えます。`.js`拡張子でimportすると、NodeNext方式で対応する`.ts`へ解決されます。
+
+```ts
+// math.ts
+export function twice(value: float): float {
+  return value * 2;
+}
+
+// door-controller.ts
+export class DoorController extends UdonBehaviour {
+  @udonVariable
+  opened: bool = false;
+
+  public Toggle(): bool {
+    this.opened = !this.opened;
+    return this.opened;
+  }
+}
+
+// door-button.ts
+import { DoorController } from "./door-controller.js";
+import { twice } from "./math.js";
+
+export class DoorButton extends UdonBehaviour {
+  @udonVariable
+  door!: DoorController;
+
+  public override Interact(): void {
+    Debug.log(twice(2.0));
+    Debug.log(this.door.Toggle());
+  }
+}
+```
+
+```sh
+udon-ts ./door-button.ts
+```
+
+この例では`door-button.uasm`、`door-controller.uasm`、`math.uasm`を生成します。通常の関数・定数は参照側のUdonプログラムへ組み込まれます。`UdonBehaviour`クラスは独立したUdonプログラムになり、型付きのフィールド参照とpublicメソッド呼び出しは、Udonの`SetProgramVariable`、`SendCustomEvent`、`GetProgramVariable`へ変換されます。
+
+Unityでは`door-controller.uasm`と`door-button.uasm`をそれぞれ別のUdon Behaviourへ割り当て、`DoorButton`の`door`欄へ前者のUdon Behaviourを設定してください。1つの`.ts`に定義できる`UdonBehaviour`クラスは1つです。現在は相対パスの実行モジュールだけを参照でき、importしたモジュールの可変なトップレベル変数は参照側プログラムごとに個別の状態を持ちます。
+
+`export`自体にはUdonのInspector公開やイベント登録の意味はありません。Inspector公開は`udonVariable` / `@udonVariable`、トップレベルイベントは`on(...)`を使用します。
 
 ### UdonBehaviourイベント補完
 
@@ -108,7 +154,7 @@ on("Start", () => {                    // Udonイベント _start
 
 トップレベルでは`udonVariable<T>(初期値, オプション)`がUnity Inspectorへ公開する明示的な組み込み関数です。これは実行時の関数呼び出しではなく、コンパイラが`.export`と初期値へ変換します。Inspectorから変更できる値なので`const`では宣言できません。
 
-クラス形式では同じ意味を持つ`@udonVariable`デコレーターを使用します。新しいコードでは公開したいフィールドを明示してください。既存コードとの互換性のため、従来のpublicフィールドも現在はInspectorへexportされます。イベント名は `start` と `Start` の両方を受け付けます。
+クラス形式では同じ意味を持つ`@udonVariable`デコレーターを使用します。`public`だけではInspectorへ公開されないため、公開したいフィールドを明示してください。イベント名は `start` と `Start` の両方を受け付けます。
 
 ```ts
 export class Greeting extends UdonBehaviour {
@@ -129,7 +175,7 @@ export class Greeting extends UdonBehaviour {
 }
 ```
 
-トップレベルのイベントは`on(イベント名, ハンドラー)`で登録します。標準イベントは引数も型推論され、未知の名前は引数なしのカスタムイベントとして扱われます。同じイベントへ複数回登録した場合は、ソースに書いた順で実行されます。従来の`export function`形式も互換性のため利用できます。
+トップレベルのイベントは`on(イベント名, ハンドラー)`で登録します。標準イベントは引数も型推論され、未知の名前は引数なしのカスタムイベントとして扱われます。同じイベントへ複数回登録した場合は、ソースに書いた順で実行されます。
 
 ```ts
 on("OnPlayerJoined", (player) => {
@@ -233,6 +279,8 @@ udon-ts --import-nodes ./udon-nodes.json \
 ```text
 udon-ts <input.ts> [-o output.uasm] [--externs registry.json]
 ```
+
+`-o`は入力ファイルの出力先だけを変更します。相対importされたファイルの`.uasm`は、各`.ts`と同じディレクトリへ生成されます。
 
 `--source-comments` を付けると、元ファイルと行番号をAssemblyコメントとして埋め込みます。
 

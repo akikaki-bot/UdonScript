@@ -213,7 +213,9 @@ namespace UdonTs.Editor
                 }
             }
 
-            AssetDatabase.ImportAsset(outputAssetPath, ImportAssetOptions.ForceUpdate);
+            // The CLI also emits one .uasm beside every relative TypeScript dependency.
+            // Refresh the whole AssetDatabase so those program assets are imported too.
+            AssetDatabase.Refresh(ImportAssetOptions.ForceUpdate);
             AbstractUdonProgramSource program =
                 AssetDatabase.LoadAssetAtPath<AbstractUdonProgramSource>(outputAssetPath);
             if (program == null)

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join, resolve } from "node:path";
-import { compile } from "./compiler/index.js";
+import { resolve } from "node:path";
+import { compileProject, defaultAssemblyPath } from "./project-compiler.js";
 import { generateDeclarations } from "./declarations.js";
 import { ExternRegistry } from "./extern-registry.js";
 import { importNodeDump } from "./node-importer.js";
@@ -51,7 +51,7 @@ Usage:
   udon-ts --import-nodes udon-nodes.json --registry-out externs.json
 
 Options:
-  -o, --out <file>       Output path (default: input-name.uasm)
+  -o, --out <file>       Entry output path (imported modules stay beside their .ts files)
   --externs <file>       Additional extern registry (node dumps are auto-detected)
   --emit-types <file>    Generate completion declarations from the registry
   --import-nodes <file>  Import a Unity Udon Graph node dump
@@ -115,8 +115,7 @@ async function main(): Promise<void> {
   if (!args.input) return;
 
   const input = resolve(args.input);
-  const source = await readFile(input, "utf8");
-  const result = compile(source, { fileName: input, externs, sourceMapComments: args.sourceMapComments });
+  const result = compileProject(input, { fileName: input, externs, sourceMapComments: args.sourceMapComments });
   if (result.diagnostics.length > 0) {
     for (const diagnostic of result.diagnostics) {
       console.error(`${diagnostic.file}:${diagnostic.line}:${diagnostic.column} - ${diagnostic.message}`);
@@ -124,10 +123,13 @@ async function main(): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const extension = extname(input);
-  const output = resolve(args.output ?? join(dirname(input), `${basename(input, extension)}.uasm`));
-  await writeFile(output, result.assembly, "utf8");
-  console.log(`Generated ${output}`);
+  for (const artifact of result.artifacts) {
+    const output = artifact.sourceFile === input && args.output
+      ? resolve(args.output)
+      : defaultAssemblyPath(artifact.sourceFile);
+    await writeFile(output, artifact.assembly, "utf8");
+    console.log(`Generated ${output}`);
+  }
 }
 
 // This module is the package's dedicated bin entry point. Running it

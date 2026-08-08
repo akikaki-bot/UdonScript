@@ -14,6 +14,7 @@ import { eventsBySourceName } from "../events.js";
 import { ExpressionTypeInferer } from "./expression-type-inference.js";
 import { EventEmitterParser } from "./event-emitter.js";
 import { UdonVariableParser, type UdonVariableMarker } from "./udon-variable.js";
+import type { BehaviorDefinition, CompilerProjectContext } from "./project-context.js";
 import { binaryExtern, ExternRegistry, unaryExtern } from "../extern-registry.js";
 import type {
   CompileOptions,
@@ -51,13 +52,19 @@ class Compiler {
   private readonly eventNameValues = new Map<string, ValueRef>();
   private readonly globalScope = new Scope();
   private readonly globalInitializers: Array<{ declaration: GlobalDeclaration; initializer: ts.Expression; target: ValueRef }> = [];
-  private readonly callStack: string[] = [];
+  private readonly callStack: FunctionInfo[] = [];
   private updateEventTiming?: ValueRef;
   private networkTargetAll?: ValueRef;
+  private readonly project: CompilerProjectContext | undefined;
+  private readonly functionsByDeclaration = new Map<ts.FunctionLikeDeclaration, FunctionInfo>();
+  private readonly globalsByDeclaration = new Map<ts.VariableDeclaration, ValueRef>();
 
-  constructor(private readonly source: string, private readonly options: CompileOptions) {
+  constructor(source: string | ts.SourceFile, private readonly options: CompileOptions, project?: CompilerProjectContext) {
     const fileName = options.fileName ?? "input.ts";
-    this.sourceFile = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    this.sourceFile = typeof source === "string"
+      ? ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+      : source;
+    this.project = project;
     this.registry = new ExternRegistry(options.externs);
     this.typeInference = new ExpressionTypeInferer({
       functionReturnType: (name) => this.functions.get(name)?.returnType,
@@ -102,6 +109,10 @@ class Compiler {
     const declaredEvents = new Set<string>();
     const entryGroups = new Map<string, FunctionInfo[]>();
     for (const info of this.entries) {
+      if (info.entryKind === "method") {
+        this.tryCompile(info.node, () => this.compileExternalMethod(info));
+        continue;
+      }
       const event = this.eventForName(info.name, info.node.parameters.length);
       declaredEvents.add(event?.sourceName ?? info.name);
       const key = event?.assemblyName ?? sanitizeSymbol(info.name);
@@ -130,7 +141,9 @@ class Compiler {
   private collectDeclarations(): void {
     this.globalScope.set("gameObject", this.allocate("__this_gameObject", "UnityEngineGameObject", "this", { exact: true }));
     this.globalScope.set("transform", this.allocate("__this_transform", "UnityEngineTransform", "this", { exact: true }));
+    this.collectImportedLibraries();
     for (const statement of this.sourceFile.statements) {
+      if (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) continue;
       if (ts.isExpressionStatement(statement)) {
         try {
           const registration = this.eventEmitter.registration(statement);
@@ -153,24 +166,22 @@ class Compiler {
           continue;
         }
       }
-      if (ts.isFunctionDeclaration(statement) && statement.name) {
-        this.registerFunction(statement, statement.name.text,
-          this.hasModifier(statement, ts.SyntaxKind.ExportKeyword) || Boolean(this.eventForName(statement.name.text)));
+      if (ts.isFunctionDeclaration(statement)) {
+        this.registerFunction(statement, statement.name?.text ?? "default", false, "SystemVoid", Boolean(statement.name));
       }
       if (ts.isVariableStatement(statement)) {
-        const exported = this.hasModifier(statement, ts.SyntaxKind.ExportKeyword);
         const constant = (statement.declarationList.flags & ts.NodeFlags.Const) !== 0;
         for (const declaration of statement.declarationList.declarations) {
           try {
             const marker = this.udonVariables.topLevel(declaration);
             if (marker && constant) this.fail("udonVariableはInspectorから変更されるためconstでは宣言できません", declaration);
-            this.collectGlobal(declaration, exported || Boolean(marker), marker?.sync, marker);
+            this.collectGlobal(declaration, Boolean(marker), marker?.sync, marker);
           } catch (error) { this.capture(error, declaration); }
         }
       }
       if (ts.isClassDeclaration(statement)) {
         const extendsUdon = statement.heritageClauses?.some((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword &&
-          clause.types.some((type) => type.expression.getText(this.sourceFile) === "UdonBehaviour")) ?? false;
+          clause.types.some((type) => ts.isIdentifier(type.expression) && type.expression.text === "UdonBehaviour")) ?? false;
         if (!extendsUdon) continue;
         for (const member of statement.members) {
           if (ts.isPropertyDeclaration(member)) {
@@ -186,16 +197,35 @@ class Compiler {
               if (marker && this.hasModifier(member, ts.SyntaxKind.StaticKeyword)) {
                 this.fail("@udonVariableをstaticフィールドには指定できません", member);
               }
-              const exported = Boolean(marker) || !this.hasModifier(member, ts.SyntaxKind.PrivateKeyword) &&
-                !this.hasModifier(member, ts.SyntaxKind.ProtectedKeyword);
-              this.collectGlobal(member, exported, marker?.sync, marker);
+              this.collectGlobal(member, Boolean(marker), marker?.sync, marker);
             } catch (error) { this.capture(error, member); }
           } else if (ts.isMethodDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
             const name = member.name.text;
             const isPublic = !this.hasModifier(member, ts.SyntaxKind.PrivateKeyword) &&
               !this.hasModifier(member, ts.SyntaxKind.ProtectedKeyword);
-            this.registerFunction(member, name, isPublic || Boolean(this.eventForName(name)));
+            const event = Boolean(this.eventForName(name, member.parameters.length));
+            this.registerFunction(member, name, isPublic || event, "SystemVoid", true, event ? "event" : "method");
           }
+        }
+      }
+    }
+  }
+
+  private collectImportedLibraries(): void {
+    if (!this.project) return;
+    for (const sourceFile of this.project.dependenciesBySource.get(this.sourceFile) ?? []) {
+      for (const statement of sourceFile.statements) {
+        if (ts.isFunctionDeclaration(statement)) {
+          this.registerFunction(statement, statement.name?.text ?? "default", false, "SystemVoid", false);
+        }
+        if (!ts.isVariableStatement(statement)) continue;
+        for (const declaration of statement.declarationList.declarations) {
+          if (!ts.isIdentifier(declaration.name)) continue;
+          if (declaration.initializer && ts.isCallExpression(declaration.initializer) &&
+            ts.isIdentifier(declaration.initializer.expression) && declaration.initializer.expression.text === "udonVariable") {
+            continue;
+          }
+          this.collectGlobal(declaration, false, undefined, undefined, `__module_${declaration.name.text}`, false);
         }
       }
     }
@@ -205,7 +235,9 @@ class Compiler {
     declaration: GlobalDeclaration,
     exported: boolean,
     sync?: SyncMode,
-    marker?: UdonVariableMarker
+    marker?: UdonVariableMarker,
+    symbolBase?: string,
+    exact = true
   ): void {
     this.tryCompile(declaration, () => {
       if (!ts.isIdentifier(declaration.name)) this.fail("分割代入はまだフィールドでは使えません", declaration.name);
@@ -223,12 +255,17 @@ class Compiler {
         : undefined);
       if (!type) this.fail(`変数 '${name}' にはUdon型注釈が必要です`, declaration);
       const constant = initializer ? this.dataLiteral(initializer, type) : undefined;
-      const target = this.allocate(name, type, constant ?? defaultValue(type), {
+      const target = this.allocate(symbolBase ?? name, type, constant ?? defaultValue(type), {
         exported,
-        exact: true,
+        exact,
         ...(sync ? { sync } : {})
       });
-      this.globalScope.set(name, target);
+      const behavior = declaration.type ? this.behaviorForTypeNode(declaration.type) : marker?.type
+        ? this.behaviorForTypeNode(marker.type)
+        : undefined;
+      if (behavior) target.behaviorType = behavior.id;
+      if (declaration.getSourceFile() === this.sourceFile) this.globalScope.set(name, target);
+      if (ts.isVariableDeclaration(declaration)) this.globalsByDeclaration.set(declaration, target);
       if (initializer && constant === undefined) this.globalInitializers.push({ declaration, initializer, target });
     });
   }
@@ -238,12 +275,14 @@ class Compiler {
     name: string,
     entry: boolean,
     defaultReturn: UdonType = "SystemVoid",
-    registerForCalls = true
+    registerForCalls = true,
+    entryKind: "event" | "method" = "event"
   ): void {
     try {
       const returnType = node.type ? this.requireType(node.type) : defaultReturn;
-      const info: FunctionInfo = { node, name, returnType, entry };
+      const info: FunctionInfo = { node, name, returnType, entry, ...(entry ? { entryKind } : {}) };
       if (registerForCalls) this.functions.set(name, info);
+      this.functionsByDeclaration.set(node, info);
       if (entry) this.entries.push(info);
     } catch (error) { this.capture(error, node); }
   }
@@ -285,6 +324,47 @@ class Compiler {
       this.label(flow.returnLabel);
     }
     this.emit("JUMP, 0xFFFFFFFC");
+  }
+
+  private compileExternalMethod(info: FunctionInfo): void {
+    const node = info.node;
+    if (!node.body || !ts.isBlock(node.body)) this.fail(`公開メソッド '${info.name}' に本体が必要です`, node);
+    const scope = new Scope(this.globalScope);
+    node.parameters.forEach((parameter, index) => {
+      if (!ts.isIdentifier(parameter.name)) this.fail("分割代入パラメータは使えません", parameter.name);
+      if (!parameter.type) this.fail(`公開メソッド引数 '${parameter.name.text}' に型注釈が必要です`, parameter);
+      const type = this.requireType(parameter.type);
+      const value = this.allocate(this.methodParameterSymbol(info.name, parameter.name.text, index), type, defaultValue(type), {
+        exported: true,
+        exact: true
+      });
+      const behavior = this.behaviorForTypeNode(parameter.type);
+      if (behavior) value.behaviorType = behavior.id;
+      scope.set(parameter.name.text, value);
+    });
+    const result = info.returnType === "SystemVoid"
+      ? undefined
+      : this.allocate(this.methodReturnSymbol(info.name), info.returnType, defaultValue(info.returnType), {
+        exported: true,
+        exact: true
+      });
+    this.emit(`.export ${sanitizeSymbol(info.name)}`);
+    this.label(sanitizeSymbol(info.name));
+    const flow: FlowContext = {
+      returnLabel: this.uniqueLabel(`${info.name}_method_end`),
+      ...(result ? { returnValue: result } : {})
+    };
+    this.compileStatements(node.body.statements, scope, flow);
+    this.label(flow.returnLabel);
+    this.emit("JUMP, 0xFFFFFFFC");
+  }
+
+  private methodParameterSymbol(method: string, parameter: string, index: number): string {
+    return `__method_${sanitizeSymbol(method)}_arg${index}_${sanitizeSymbol(parameter)}`;
+  }
+
+  private methodReturnSymbol(method: string): string {
+    return `__method_${sanitizeSymbol(method)}_return`;
   }
 
   private validateEventHandler(info: FunctionInfo, event: EventDefinition | undefined, assemblyName: string): void {
@@ -354,9 +434,12 @@ class Compiler {
             : undefined;
         if (!type || type === "SystemVoid") this.fail(`変数 '${declaration.name.text}' の型を推論できません`, declaration);
         const target = this.allocate(declaration.name.text, type);
+        const behavior = declaration.type ? this.behaviorForTypeNode(declaration.type) : undefined;
+        if (behavior) target.behaviorType = behavior.id;
         scope.set(declaration.name.text, target);
         if (declaration.initializer) {
           const value = this.compileExpression(declaration.initializer, scope, type, flow);
+          if (value.behaviorType) target.behaviorType = value.behaviorType;
           this.copy(value, target, declaration);
         }
       }
@@ -445,7 +528,7 @@ class Compiler {
       return this.compileExpression(node.expression, scope, asserted, flow);
     }
     if (ts.isIdentifier(node)) {
-      const value = scope.get(node.text);
+      const value = scope.get(node.text) ?? this.importedGlobal(node);
       if (!value) this.fail(`未定義の識別子 '${node.text}' です`, node);
       this.assertAssignable(value.type, expected, node);
       return value;
@@ -600,12 +683,14 @@ class Compiler {
     const eventCall = this.eventEmitter.callName(node);
     if (eventCall) return this.compileEventEmitterCall(eventCall, node, scope, expected, flow);
     if (ts.isIdentifier(node.expression)) {
-      const fn = this.functions.get(node.expression.text);
-      if (fn && !this.eventForName(fn.name)) return this.inlineFunction(fn, node, scope, expected, flow);
+      const fn = this.functionForReference(node.expression) ?? this.functions.get(node.expression.text);
+      if (fn && fn.entryKind !== "event") return this.inlineFunction(fn, node, scope, expected, flow);
     }
     if (!ts.isPropertyAccessExpression(node.expression)) this.fail("呼び出せない式です", node.expression);
     const access = node.expression;
     const member = access.name.text;
+    const importedFunction = this.functionForReference(access.name);
+    if (importedFunction) return this.inlineFunction(importedFunction, node, scope, expected, flow);
     if (access.expression.kind === ts.SyntaxKind.ThisKeyword) {
       const fn = this.functions.get(member);
       if (!fn || this.eventForName(fn.name)) this.fail(`呼び出せるヘルパーメソッド '${member}' がありません`, access.name);
@@ -617,6 +702,12 @@ class Compiler {
     if (!owner) {
       receiver = this.compileExpression(access.expression, scope, undefined, flow);
       owner = receiver.type;
+    }
+    const behavior = receiver?.behaviorType ? this.project?.behaviorsById.get(receiver.behaviorType) : undefined;
+    if (receiver && behavior) {
+      const method = behavior.methods.get(member);
+      if (!method) this.fail(`Behaviour '${behavior.name}' に公開メソッド '${member}' がありません`, access.name);
+      return this.compileBehaviorMethodCall(receiver, method, node, scope, expected, flow);
     }
     const definition = this.selectExtern(owner, member, "method", node.arguments, scope, access.name);
     const args = this.compileExternArguments(node, definition, scope, flow);
@@ -666,6 +757,55 @@ class Compiler {
       return this.voidValue(expected, node);
     }
     this.fail(`未対応のイベントAPIです: ${name}`, node);
+  }
+
+  private compileBehaviorMethodCall(
+    receiver: ValueRef,
+    method: ts.MethodDeclaration,
+    call: ts.CallExpression,
+    scope: Scope,
+    expected: UdonType | undefined,
+    flow: FlowContext
+  ): ValueRef {
+    if (!method.name || !ts.isIdentifier(method.name)) this.fail("Behaviourメソッド名を解決できません", call.expression);
+    const methodName = method.name.text;
+    if (this.eventForName(methodName, method.parameters.length)) {
+      this.fail(`標準Udonイベント '${methodName}' は別Behaviourの通常メソッドとして呼び出せません`, call.expression);
+    }
+    if (call.arguments.length !== method.parameters.length) {
+      this.fail(`${methodName}は${method.parameters.length}引数ですが、${call.arguments.length}個渡されています`, call);
+    }
+    method.parameters.forEach((parameter, index) => {
+      if (!ts.isIdentifier(parameter.name) || !parameter.type) {
+        this.fail(`Behaviour公開メソッド '${methodName}' の引数には名前と型注釈が必要です`, parameter);
+      }
+      const type = this.requireType(parameter.type);
+      const value = this.compileExpression(call.arguments[index]!, scope, type, flow);
+      const symbolName = this.methodParameterSymbol(methodName, parameter.name.text, index);
+      const name = this.allocate(`__remote_${symbolName}`, "SystemString", escapeString(symbolName));
+      this.emitExtern(
+        "VRCUdonCommonInterfacesIUdonEventReceiver.__SetProgramVariable__SystemString_SystemObject__SystemVoid",
+        [receiver, name, value]
+      );
+    });
+    const eventName = this.allocate(`__remote_method_${methodName}`, "SystemString", escapeString(sanitizeSymbol(methodName)));
+    this.emitExtern(eventExterns.emit, [receiver, eventName]);
+    const returnType = method.type ? this.requireType(method.type) : "SystemVoid";
+    if (returnType === "SystemVoid") return this.voidValue(expected, call);
+    const returnName = this.methodReturnSymbol(methodName);
+    const name = this.allocate(`__remote_${returnName}`, "SystemString", escapeString(returnName));
+    const boxed = this.allocate(`${methodName}_return_boxed`, "SystemObject");
+    this.emitExtern(
+      "VRCUdonCommonInterfacesIUdonEventReceiver.__GetProgramVariable__SystemString__SystemObject",
+      [receiver, name],
+      boxed
+    );
+    const output = this.allocate(`${methodName}_return`, returnType);
+    this.copyUnchecked(boxed, output);
+    const behavior = method.type ? this.behaviorForTypeNode(method.type) : undefined;
+    if (behavior) output.behaviorType = behavior.id;
+    this.assertAssignable(output.type, expected, call);
+    return output;
   }
 
   private compileEventName(node: ts.Expression, network = false): ValueRef {
@@ -753,6 +893,11 @@ class Compiler {
 
   private compilePropertyGet(node: ts.PropertyAccessExpression, scope: Scope, expected: UdonType | undefined, flow: FlowContext): ValueRef {
     const member = node.name.text;
+    const imported = this.importedGlobal(node.name);
+    if (imported) {
+      this.assertAssignable(imported.type, expected, node);
+      return imported;
+    }
     if (node.expression.kind === ts.SyntaxKind.ThisKeyword) {
       const value = scope.get(member);
       if (!value) this.fail(`フィールド '${member}' がありません`, node.name);
@@ -774,6 +919,21 @@ class Compiler {
     if (!owner) {
       receiver = this.compileExpression(node.expression, scope, undefined, flow);
       owner = receiver.type;
+    }
+    const behavior = receiver?.behaviorType ? this.project?.behaviorsById.get(receiver.behaviorType) : undefined;
+    if (receiver && behavior) {
+      const field = behavior.fields.get(member);
+      if (!field?.type) this.fail(`Behaviour '${behavior.name}' に型付き公開フィールド '${member}' がありません`, node.name);
+      const type = this.requireType(field.type);
+      const output = this.allocate(`${member}_remote`, type);
+      const name = this.allocate(`__field_${member}`, "SystemString", escapeString(member));
+      const boxed = this.allocate(`${member}_boxed`, "SystemObject");
+      this.emitExtern("VRCUdonCommonInterfacesIUdonEventReceiver.__GetProgramVariable__SystemString__SystemObject", [receiver, name], boxed);
+      this.copyUnchecked(boxed, output);
+      const referencedBehavior = this.behaviorForTypeNode(field.type);
+      if (referencedBehavior) output.behaviorType = referencedBehavior.id;
+      this.assertAssignable(output.type, expected, node);
+      return output;
     }
     const definition = this.registry.find(owner, member, "get");
     if (!definition) this.fail(`プロパティextern '${sourceTypeName(owner)}.${member}' がレジストリにありません`, node.name);
@@ -799,6 +959,17 @@ class Compiler {
       receiver = this.compileExpression(access.expression, scope, undefined, flow);
       owner = receiver.type;
     }
+    const behavior = receiver?.behaviorType ? this.project?.behaviorsById.get(receiver.behaviorType) : undefined;
+    if (receiver && behavior) {
+      const field = behavior.fields.get(member);
+      if (!field?.type) this.fail(`Behaviour '${behavior.name}' に型付き公開フィールド '${member}' がありません`, access.name);
+      const type = this.requireType(field.type);
+      const value = this.compileExpression(expression, scope, type, flow);
+      const name = this.allocate(`__field_${member}`, "SystemString", escapeString(member));
+      this.emitExtern("VRCUdonCommonInterfacesIUdonEventReceiver.__SetProgramVariable__SystemString_SystemObject__SystemVoid", [receiver, name, value]);
+      this.assertAssignable(value.type, expected, expression);
+      return value;
+    }
     const definition = this.selectExtern(owner, member, "set", [expression], scope, access.name);
     const parameter = definition.parameters[0];
     if (!parameter) this.fail(`setter extern '${definition.signature}' に値引数がありません`, access.name);
@@ -812,9 +983,9 @@ class Compiler {
     const body = fn.node.body;
     if (!body) this.fail(`関数 '${fn.name}' に本体がありません`, fn.node);
     if (!ts.isBlock(body)) this.fail(`インライン関数 '${fn.name}' にはブロック本体が必要です`, body);
-    if (this.callStack.includes(fn.name)) this.fail(`再帰呼び出し '${fn.name}' はUdon VMでは安全に展開できません`, call);
+    if (this.callStack.includes(fn)) this.fail(`再帰呼び出し '${fn.name}' はUdon VMでは安全に展開できません`, call);
     if (call.arguments.length !== fn.node.parameters.length) this.fail(`関数 '${fn.name}' の引数の数が違います`, call);
-    this.callStack.push(fn.name);
+    this.callStack.push(fn);
     try {
       const scope = new Scope(this.globalScope);
       fn.node.parameters.forEach((parameter, index) => {
@@ -823,10 +994,14 @@ class Compiler {
         const type = this.requireType(parameter.type);
         const argument = this.compileExpression(call.arguments[index]!, callerScope, type, outerFlow);
         const local = this.allocate(`${fn.name}_${parameter.name.text}`, type);
+        const behavior = this.behaviorForTypeNode(parameter.type);
+        if (behavior) local.behaviorType = behavior.id;
         this.copy(argument, local, call.arguments[index]!);
         scope.set(parameter.name.text, local);
       });
       const result = fn.returnType === "SystemVoid" ? undefined : this.allocate(`${fn.name}_return`, fn.returnType);
+      const returnBehavior = fn.node.type ? this.behaviorForTypeNode(fn.node.type) : undefined;
+      if (result && returnBehavior) result.behaviorType = returnBehavior.id;
       const endLabel = this.uniqueLabel(`${fn.name}_inline_end`);
       this.compileStatements(body.statements, scope, { returnLabel: endLabel, ...(result ? { returnValue: result } : {}) });
       this.label(endLabel);
@@ -839,6 +1014,27 @@ class Compiler {
   }
 
   private inferExpressionType(node: ts.Expression, scope: Scope): UdonType | undefined {
+    if (ts.isCallExpression(node)) {
+      const reference = ts.isIdentifier(node.expression)
+        ? node.expression
+        : ts.isPropertyAccessExpression(node.expression)
+          ? node.expression.name
+          : undefined;
+      const importedFunction = reference ? this.functionForReference(reference) : undefined;
+      if (importedFunction) return importedFunction.returnType;
+      if (ts.isPropertyAccessExpression(node.expression)) {
+        const behavior = this.behaviorForExpression(node.expression.expression, scope);
+        const method = behavior?.methods.get(node.expression.name.text);
+        if (method) return method.type ? this.requireType(method.type) : "SystemVoid";
+      }
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+      const imported = this.importedGlobal(node.name);
+      if (imported) return imported.type;
+      const behavior = this.behaviorForExpression(node.expression, scope);
+      const field = behavior?.fields.get(node.name.text);
+      if (field?.type) return this.requireType(field.type);
+    }
     return this.typeInference.infer(node, scope);
   }
 
@@ -914,9 +1110,55 @@ class Compiler {
   }
 
   private requireType(node: ts.TypeNode): UdonType {
-    const type = typeFromAnnotation(node.getText(this.sourceFile));
-    if (!type) this.fail(`Udon型として解決できません: ${node.getText(this.sourceFile)}`, node);
+    const sourceFile = node.getSourceFile();
+    const behavior = this.behaviorForTypeNode(node);
+    if (behavior) return "VRCUdonCommonInterfacesIUdonEventReceiver";
+    const typeText = node.getText(sourceFile);
+    const type = typeFromAnnotation(typeText);
+    if (!type) this.fail(`Udon型として解決できません: ${typeText}`, node);
     return type;
+  }
+
+  private behaviorForTypeNode(node: ts.TypeNode): BehaviorDefinition | undefined {
+    if (!this.project || !ts.isTypeReferenceNode(node)) return undefined;
+    const declaration = this.declarationForReference(node.typeName);
+    return declaration && ts.isClassDeclaration(declaration)
+      ? this.project.behaviorsByDeclaration.get(declaration)
+      : undefined;
+  }
+
+  private behaviorForExpression(node: ts.Expression, scope: Scope): BehaviorDefinition | undefined {
+    if (ts.isParenthesizedExpression(node)) return this.behaviorForExpression(node.expression, scope);
+    if (ts.isIdentifier(node)) {
+      const value = scope.get(node.text) ?? this.importedGlobal(node);
+      return value?.behaviorType ? this.project?.behaviorsById.get(value.behaviorType) : undefined;
+    }
+    if (ts.isPropertyAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword) {
+      const value = scope.get(node.name.text);
+      return value?.behaviorType ? this.project?.behaviorsById.get(value.behaviorType) : undefined;
+    }
+    return undefined;
+  }
+
+  private declarationForReference(node: ts.Node): ts.Declaration | undefined {
+    if (!this.project) return undefined;
+    let symbol = this.project.checker.getSymbolAtLocation(node);
+    if (!symbol) return undefined;
+    if (symbol.flags & ts.SymbolFlags.Alias) symbol = this.project.checker.getAliasedSymbol(symbol);
+    return symbol.valueDeclaration ?? symbol.declarations?.find((declaration) =>
+      ts.isFunctionDeclaration(declaration) || ts.isVariableDeclaration(declaration) || ts.isClassDeclaration(declaration));
+  }
+
+  private functionForReference(node: ts.Node): FunctionInfo | undefined {
+    const declaration = this.declarationForReference(node);
+    return declaration && (ts.isFunctionDeclaration(declaration) || ts.isMethodDeclaration(declaration))
+      ? this.functionsByDeclaration.get(declaration)
+      : undefined;
+  }
+
+  private importedGlobal(node: ts.Node): ValueRef | undefined {
+    const declaration = this.declarationForReference(node);
+    return declaration && ts.isVariableDeclaration(declaration) ? this.globalsByDeclaration.get(declaration) : undefined;
   }
 
   private assertAssignable(actual: UdonType, expected: UdonType | undefined, node: ts.Node): void {
@@ -926,6 +1168,12 @@ class Compiler {
 
   private copy(source: ValueRef, target: ValueRef, node: ts.Node): void {
     this.assertAssignable(source.type, target.type, node);
+    this.emit(`PUSH, ${source.symbol}`);
+    this.emit(`PUSH, ${target.symbol}`);
+    this.emit("COPY");
+  }
+
+  private copyUnchecked(source: ValueRef, target: ValueRef): void {
     this.emit(`PUSH, ${source.symbol}`);
     this.emit(`PUSH, ${target.symbol}`);
     this.emit("COPY");
@@ -949,8 +1197,9 @@ class Compiler {
   }
   private sourceComment(node: ts.Node): void {
     if (!this.options.sourceMapComments) return;
-    const position = this.sourceFile.getLineAndCharacterOfPosition(node.getStart(this.sourceFile));
-    this.emit(`# ${this.sourceFile.fileName}:${position.line + 1}`);
+    const sourceFile = node.getSourceFile();
+    const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+    this.emit(`# ${sourceFile.fileName}:${position.line + 1}`);
   }
   private fail(message: string, node: ts.Node): never { throw new CompileFailure(message, node); }
   private tryCompile(node: ts.Node, action: () => void): void {
@@ -958,9 +1207,10 @@ class Compiler {
   }
   private capture(error: unknown, fallback?: ts.Node): void {
     const node = error instanceof CompileFailure ? error.node : fallback ?? this.sourceFile;
-    const position = this.sourceFile.getLineAndCharacterOfPosition(node.getStart(this.sourceFile));
+    const sourceFile = node.getSourceFile();
+    const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
     this.diagnostics.push({
-      file: this.sourceFile.fileName,
+      file: sourceFile.fileName,
       line: position.line + 1,
       column: position.character + 1,
       message: error instanceof Error ? error.message : String(error)
@@ -970,4 +1220,12 @@ class Compiler {
 
 export function compile(source: string, options: CompileOptions = {}): CompileResult {
   return new Compiler(source, options).compile();
+}
+
+export function compileSourceFile(
+  sourceFile: ts.SourceFile,
+  options: CompileOptions,
+  project: CompilerProjectContext
+): CompileResult {
+  return new Compiler(sourceFile, { ...options, fileName: sourceFile.fileName }, project).compile();
 }
