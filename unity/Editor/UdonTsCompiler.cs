@@ -21,26 +21,26 @@ namespace UdonTs.Editor
         private const string ExternsPathKey = "UdonTs.Editor.ExternsPath";
         private const string LastProgramPathKey = "UdonTs.Editor.LastProgramPath";
 
-        [MenuItem("Assets/Udon TS/Compile selected TypeScript", false, 2000)]
+        [MenuItem("Assets/UdonScript/Compile selected TypeScript", false, 2000)]
         private static void CompileSelectedFromAssetsMenu()
         {
             CompileSelected();
         }
 
-        [MenuItem("Assets/Udon TS/Compile selected TypeScript", true)]
+        [MenuItem("Assets/UdonScript/Compile selected TypeScript", true)]
         private static bool ValidateCompileSelectedFromAssetsMenu()
         {
             return GetSelectedTypeScriptAssets().Count > 0;
         }
 
-        [MenuItem("VRChat SDK/Udon TS/Compile selected TypeScript")]
+        [MenuItem("VRChat SDK/UdonScript/Compile selected TypeScript")]
         private static void CompileSelected()
         {
             List<string> sourcePaths = GetSelectedTypeScriptAssets();
             if (sourcePaths.Count == 0)
             {
                 EditorUtility.DisplayDialog(
-                    "Udon TS",
+                    "UdonScript",
                     "Projectウィンドウでコンパイルする .ts ファイルを選択してください。",
                     "OK");
                 return;
@@ -52,7 +52,7 @@ namespace UdonTs.Editor
                 EditorUtility.DisplayDialog(
                     "udon-ts が見つかりません",
                     "先に npm link を実行してUnityを再起動するか、\n" +
-                    "VRChat SDK > Udon TS > Set CLI path... から udon-ts.cmd を指定してください。",
+                    "VRChat SDK > UdonScript > Set CLI path... から udon-ts.cmd を指定してください。",
                     "OK");
                 return;
             }
@@ -68,7 +68,7 @@ namespace UdonTs.Editor
             catch (Exception exception)
             {
                 UnityEngine.Debug.LogException(exception);
-                EditorUtility.DisplayDialog("Udon TS compile failed", exception.Message, "OK");
+                EditorUtility.DisplayDialog("UdonScript compile failed", exception.Message, "OK");
                 return;
             }
 
@@ -85,13 +85,13 @@ namespace UdonTs.Editor
             }
         }
 
-        [MenuItem("VRChat SDK/Udon TS/Attach last compiled program to selected GameObject")]
+        [MenuItem("VRChat SDK/UdonScript/Attach last compiled program to selected GameObject")]
         private static void AttachLastProgram()
         {
             GameObject target = Selection.activeGameObject;
             if (target == null)
             {
-                EditorUtility.DisplayDialog("Udon TS", "HierarchyでGameObjectを選択してください。", "OK");
+                EditorUtility.DisplayDialog("UdonScript", "HierarchyでGameObjectを選択してください。", "OK");
                 return;
             }
 
@@ -101,7 +101,7 @@ namespace UdonTs.Editor
             if (program == null)
             {
                 EditorUtility.DisplayDialog(
-                    "Udon TS",
+                    "UdonScript",
                     "このUnityセッションでは、まだTypeScriptをコンパイルしていません。",
                     "OK");
                 return;
@@ -111,7 +111,7 @@ namespace UdonTs.Editor
             if (behaviours.Length > 1)
             {
                 EditorUtility.DisplayDialog(
-                    "Udon TS",
+                    "UdonScript",
                     "このGameObjectにはUdon Behaviourが複数あります。\n" +
                     "Inspectorで目的のProgram Sourceへ生成した .uasm を割り当ててください。",
                     "OK");
@@ -122,7 +122,7 @@ namespace UdonTs.Editor
                 ? behaviours[0]
                 : Undo.AddComponent<UdonBehaviour>(target);
 
-            Undo.RecordObject(behaviour, "Attach Udon TS program");
+            Undo.RecordObject(behaviour, "Attach UdonScript program");
             behaviour.programSource = program;
             EditorUtility.SetDirty(behaviour);
             PrefabUtility.RecordPrefabInstancePropertyModifications(behaviour);
@@ -131,11 +131,11 @@ namespace UdonTs.Editor
             Selection.activeGameObject = target;
             EditorGUIUtility.PingObject(behaviour);
             UnityEngine.Debug.Log(
-                string.Format("Attached Udon TS program '{0}' to '{1}'.", programPath, target.name),
+                string.Format("Attached UdonScript program '{0}' to '{1}'.", programPath, target.name),
                 target);
         }
 
-        [MenuItem("VRChat SDK/Udon TS/Set CLI path...")]
+        [MenuItem("VRChat SDK/UdonScript/Set CLI path...")]
         private static void SetCliPath()
         {
             string current = EditorPrefs.GetString(CliPathKey, string.Empty);
@@ -146,10 +146,10 @@ namespace UdonTs.Editor
             if (string.IsNullOrEmpty(path)) return;
 
             EditorPrefs.SetString(CliPathKey, path);
-            UnityEngine.Debug.Log("Udon TS CLI: " + path);
+            UnityEngine.Debug.Log("UdonScript CLI: " + path);
         }
 
-        [MenuItem("VRChat SDK/Udon TS/Set extern registry...")]
+        [MenuItem("VRChat SDK/UdonScript/Set extern registry...")]
         private static void SetExternsPath()
         {
             string current = EditorPrefs.GetString(ExternsPathKey, string.Empty);
@@ -160,14 +160,14 @@ namespace UdonTs.Editor
             if (string.IsNullOrEmpty(path)) return;
 
             EditorPrefs.SetString(ExternsPathKey, path);
-            UnityEngine.Debug.Log("Udon TS extern registry: " + path);
+            UnityEngine.Debug.Log("UdonScript extern registry: " + path);
         }
 
-        [MenuItem("VRChat SDK/Udon TS/Clear extern registry")]
+        [MenuItem("VRChat SDK/UdonScript/Clear extern registry")]
         private static void ClearExternsPath()
         {
             EditorPrefs.DeleteKey(ExternsPathKey);
-            UnityEngine.Debug.Log("Udon TS extern registry cleared.");
+            UnityEngine.Debug.Log("UdonScript extern registry cleared.");
         }
 
         private static string CompileAsset(string cliPath, string sourceAssetPath)
@@ -231,7 +231,7 @@ namespace UdonTs.Editor
                     assemblyProgram.AssemblyError);
             }
 
-            UnityEngine.Debug.Log("Compiled Udon TS: " + sourceAssetPath + " -> " + outputAssetPath, program);
+            UnityEngine.Debug.Log("Compiled UdonScript: " + sourceAssetPath + " -> " + outputAssetPath, program);
             return outputAssetPath;
         }
 

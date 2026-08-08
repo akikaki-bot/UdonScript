@@ -31,7 +31,7 @@ namespace UdonTs.Editor
             public string[] outputTypes;
         }
 
-        [MenuItem("VRChat SDK/Udon TS/Export extern node registry")]
+        [MenuItem("VRChat SDK/UdonScript/Export extern node registry")]
         private static void Export()
         {
             var path = EditorUtility.SaveFilePanel(
@@ -66,7 +66,7 @@ namespace UdonTs.Editor
             Debug.Log($"Exported {entries.Count} Udon node definitions to {path}");
         }
 
-        [MenuItem("VRChat SDK/Udon TS/Verify Udon Assembly")]
+        [MenuItem("VRChat SDK/UdonScript/Verify Udon Assembly")]
         private static void VerifyAssembly()
         {
             var path = EditorUtility.OpenFilePanel("Verify Udon Assembly", Application.dataPath, "uasm");

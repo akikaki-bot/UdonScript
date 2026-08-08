@@ -44,14 +44,14 @@ udon-ts --externs ./my-externs.json --emit-types ./types/udon.generated.d.ts
 
 2. `unity/Editor/UdonTsCompiler.cs`と`unity/Editor/UdonTsNodeExporter.cs`を、VRChat Worldsプロジェクトの`Assets/Editor`へコピーします。
 3. Unityを再起動し、Projectウィンドウで`Assets`内の`.ts`を選択します。
-4. 右クリックの`Udon TS > Compile selected TypeScript`を実行します。同じ場所に同名の`.uasm`が生成され、UnityがUdon Program Assetとして自動インポートします。
-5. 初回だけ、生成された`.uasm`をGameObjectの`Udon Behaviour > Program Source`へドラッグします。またはGameObjectを選び、`VRChat SDK > Udon TS > Attach last compiled program to selected GameObject`を実行します。Udon Behaviourがなければ自動で追加されます。
+4. 右クリックの`UdonScript > Compile selected TypeScript`を実行します。同じ場所に同名の`.uasm`が生成され、UnityがUdon Program Assetとして自動インポートします。
+5. 初回だけ、生成された`.uasm`をGameObjectの`Udon Behaviour > Program Source`へドラッグします。またはGameObjectを選び、`VRChat SDK > UdonScript > Attach last compiled program to selected GameObject`を実行します。Udon Behaviourがなければ自動で追加されます。
 
 以後は同じ`.ts`を再コンパイルすれば、同じ`.uasm`が更新されるため割り当て直しは不要です。コンパイル後、公開フィールドはUdon BehaviourのInspectorで設定できます。
 
-Unityから`udon-ts`を発見できない場合は、`VRChat SDK > Udon TS > Set CLI path...`で`udon-ts.cmd`を指定してください。Unityの起動後に`npm link`した場合は、Unityを再起動するとPATHも更新されます。
+Unityから`udon-ts`を発見できない場合は、`VRChat SDK > UdonScript > Set CLI path...`で`udon-ts.cmd`を指定してください。Unityの起動後に`npm link`した場合は、Unityを再起動するとPATHも更新されます。
 
-SDKから出力したnode dumpや追加externを使う場合は、`VRChat SDK > Udon TS > Set extern registry...`でJSONを指定します。
+SDKから出力したnode dumpや追加externを使う場合は、`VRChat SDK > UdonScript > Set extern registry...`でJSONを指定します。
 
 ### UdonBehaviourイベント補完
 
@@ -216,7 +216,7 @@ const value = extern<float>(
 
 ### VRChat SDKから完全な一覧を取り込む
 
-公式仕様が推奨するUdon Graphノードの取得用に、`unity/Editor/UdonTsNodeExporter.cs` を同梱しています。このファイルをVRChat Worlds Unityプロジェクトの `Assets/Editor` へコピーし、メニューの `VRChat SDK > Udon TS > Export extern node registry` を実行します。その後、出力したdumpを変換します。
+公式仕様が推奨するUdon Graphノードの取得用に、`unity/Editor/UdonTsNodeExporter.cs` を同梱しています。このファイルをVRChat Worlds Unityプロジェクトの `Assets/Editor` へコピーし、メニューの `VRChat SDK > UdonScript > Export extern node registry` を実行します。その後、出力したdumpを変換します。
 
 ```sh
 udon-ts --import-nodes ./udon-nodes.json \
@@ -226,7 +226,7 @@ udon-ts --import-nodes ./udon-nodes.json \
 
 この方式では、インストール済みSDKバージョンが実際に公開しているextern署名をコンパイラと型補完の両方へ反映できます。SDK更新時は再エクスポートしてください。
 
-同じUnity Editor拡張の `VRChat SDK > Udon TS > Verify Udon Assembly` では、生成した`.uasm`をSDK内蔵Assemblerへ渡して、そのSDKバージョンで受理されることを検証できます。
+同じUnity Editor拡張の `VRChat SDK > UdonScript > Verify Udon Assembly` では、生成した`.uasm`をSDK内蔵Assemblerへ渡して、そのSDKバージョンで受理されることを検証できます。
 
 ## CLI
 
