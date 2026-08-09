@@ -93,9 +93,13 @@ export class DoorButton extends UdonBehaviour {
 udon-ts ./door-button.ts
 ```
 
-この例では`door-button.uasm`、`door-controller.uasm`、`math.uasm`を生成します。通常の関数・定数は参照側のUdonプログラムへ組み込まれます。`UdonBehaviour`クラスは独立したUdonプログラムになり、型付きのフィールド参照とpublicメソッド呼び出しは、Udonの`SetProgramVariable`、`SendCustomEvent`、`GetProgramVariable`へ変換されます。
+この例では`door-button.uasm`、`door-controller.uasm`、`math.uasm`を生成します。通常の関数・定数は参照側のUdonプログラムへ組み込まれます。関数宣言に加えて、`export const twice = (value: float): float => value * 2`のようなアロー関数と関数式も使用できます。`UdonBehaviour`クラスは独立したUdonプログラムになり、型付きのフィールド参照とpublicメソッド呼び出しは、Udonの`SetProgramVariable`、`SendCustomEvent`、`GetProgramVariable`へ変換されます。
 
 Unityでは`door-controller.uasm`と`door-button.uasm`をそれぞれ別のUdon Behaviourへ割り当て、`DoorButton`の`door`欄へ前者のUdon Behaviourを設定してください。1つの`.ts`に定義できる`UdonBehaviour`クラスは1つです。現在は相対パスの実行モジュールだけを参照でき、importしたモジュールの可変なトップレベル変数は参照側プログラムごとに個別の状態を持ちます。
+
+循環importはサポートしていません。検出すると循環経路をWarningとして表示し、CompileErrorにして`.uasm`を生成しません。
+
+CLIのCompileErrorは、対象ファイルと行・列、ソース行、エラー位置、原因をまとめて表示します。対応端末では色付きになり、Unityなどが出力をリダイレクトしている場合はANSIカラーを自動で無効化します。
 
 `export`自体にはUdonのInspector公開やイベント登録の意味はありません。Inspector公開は`udonVariable` / `@udonVariable`、トップレベルイベントは`on(...)`を使用します。
 
@@ -136,7 +140,7 @@ npm run generate:types
 
 ## 言語モデル
 
-Udon VMにローカル変数はないため、TypeScriptのトップレベル変数・ローカル変数・一時値はすべて一意なUdon Heap変数へ変換されます。ユーザー関数はインライン展開されるので、通常の引数と戻り値を使えますが、再帰はコンパイルエラーです。
+Udon VMにローカル変数はないため、TypeScriptのトップレベル変数・ローカル変数・一時値はすべて一意なUdon Heap変数へ変換されます。ユーザー関数はインライン展開されるので、通常の引数と戻り値を使えますが、再帰はコンパイルエラーです。戻り値のUdon型が型付き引数、リテラル、import先関数などから一意に決まる場合は、TypeScriptと同様に戻り値型注釈を省略できます。
 
 ```ts
 let message = udonVariable<string>("hello");

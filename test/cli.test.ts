@@ -68,3 +68,29 @@ test("CLI emits the entry and every relative TypeScript dependency", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("CLI fails without outputs when imports are circular", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "udon-ts-cli-"));
+  try {
+    const entry = resolve(directory, "main.ts");
+    writeFileSync(entry, `import { value } from "./dependency.js"; export const result: int = value;`, "utf8");
+    writeFileSync(resolve(directory, "dependency.ts"), `import { result } from "./main.js"; export const value: int = result;`, "utf8");
+
+    const result = spawnSync(process.execPath, [resolve("dist/cli.js"), entry], {
+      cwd: resolve("."), encoding: "utf8"
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /UdonScript CompileError/);
+    assert.match(result.stderr, /dependency\.ts:1:/);
+    assert.match(result.stderr, /1 \| import/);
+    assert.match(result.stderr, /\^ Warning: 循環import/);
+    assert.match(result.stderr, /Warning: 循環import/);
+    assert.match(result.stderr, /main\.ts -> dependency\.ts -> main\.ts/);
+    assert.match(result.stderr, /Compilation failed with 1 error\./);
+    assert.equal(existsSync(resolve(directory, "main.uasm")), false);
+    assert.equal(existsSync(resolve(directory, "dependency.uasm")), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

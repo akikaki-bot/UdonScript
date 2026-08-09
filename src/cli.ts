@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import { readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { compileProject, defaultAssemblyPath } from "./project-compiler.js";
 import { generateDeclarations } from "./declarations.js";
 import { ExternRegistry } from "./extern-registry.js";
 import { importNodeDump } from "./node-importer.js";
-import type { ExternDefinition, UdonNodeDump } from "./model.js";
+import type { Diagnostic, ExternDefinition, UdonNodeDump } from "./model.js";
 
 interface Arguments {
   input?: string;
@@ -71,12 +71,56 @@ function definitionsFromJson(value: unknown, file: string): ExternDefinition[] {
   );
 }
 
+const useColor = Boolean(process.stderr.isTTY) && !("NO_COLOR" in process.env);
+
+function color(text: string, code: number): string {
+  return useColor ? `\u001b[${code}m${text}\u001b[0m` : text;
+}
+
+function displayPath(file: string): string {
+  const path = relative(process.cwd(), file) || file;
+  return path.replaceAll("\\", "/");
+}
+
+async function reportDiagnostic(diagnostic: Diagnostic): Promise<void> {
+  const location = `${displayPath(diagnostic.file)}:${diagnostic.line}:${diagnostic.column}`;
+  const warning = diagnostic.message.startsWith("Warning:");
+  const message = warning ? color(diagnostic.message, 33) : diagnostic.message;
+  console.error(`\n${color("UdonScript CompileError", 31)}`);
+  console.error(`  ${color("at", 90)} ${color(location, 36)}`);
+  try {
+    const source = await readFile(diagnostic.file, "utf8");
+    const sourceLine = source.split(/\r?\n/u)[diagnostic.line - 1];
+    if (sourceLine !== undefined) {
+      const lineNumber = String(diagnostic.line);
+      const gutter = " ".repeat(lineNumber.length);
+      const visibleLine = sourceLine.replaceAll("\t", "    ");
+      const pointerIndent = sourceLine.slice(0, Math.max(0, diagnostic.column - 1))
+        .replace(/[^\t]/gu, " ")
+        .replaceAll("\t", "    ");
+      console.error(`  ${color(lineNumber, 90)} ${color("|", 90)} ${visibleLine}`);
+      console.error(`  ${gutter} ${color("|", 90)} ${pointerIndent}${color("^", 31)} ${message}`);
+      return;
+    }
+  } catch {
+    // A location and message are still useful if the source disappeared after compilation.
+  }
+  console.error(`  ${color("^", 31)} ${message}`);
+}
+
+async function reportDiagnostics(diagnostics: readonly Diagnostic[]): Promise<void> {
+  for (const diagnostic of diagnostics) await reportDiagnostic(diagnostic);
+  const count = diagnostics.length;
+  console.error(`\n${color(`Compilation failed with ${count} error${count === 1 ? "" : "s"}.`, 31)}`);
+}
+
 async function main(): Promise<void> {
   let args: Arguments;
   try { args = parseArguments(process.argv.slice(2)); }
   catch (error) {
-    console.error(error instanceof Error ? error.message : error);
-    console.error(usage());
+    console.error(`\n${color("UdonScript CLI Error", 31)}`);
+    console.error(`  ${error instanceof Error ? error.message : error}`);
+    console.error(`\n${usage()}`);
     process.exitCode = 2;
     return;
   }
@@ -117,9 +161,7 @@ async function main(): Promise<void> {
   const input = resolve(args.input);
   const result = compileProject(input, { fileName: input, externs, sourceMapComments: args.sourceMapComments });
   if (result.diagnostics.length > 0) {
-    for (const diagnostic of result.diagnostics) {
-      console.error(`${diagnostic.file}:${diagnostic.line}:${diagnostic.column} - ${diagnostic.message}`);
-    }
+    await reportDiagnostics(result.diagnostics);
     process.exitCode = 1;
     return;
   }
@@ -136,6 +178,7 @@ async function main(): Promise<void> {
 // unconditionally also works through Windows npm junctions, whose argv path
 // differs from import.meta.url even though they point at the same file.
 void main().catch((error: unknown) => {
-  console.error(`udon-ts: ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`\n${color("UdonScript Error", 31)}`);
+  console.error(`  ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 });

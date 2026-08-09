@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { basename, dirname, extname, join, normalize, resolve } from "node:path";
+import { basename, dirname, extname, join, normalize, relative, resolve } from "node:path";
 import { compileSourceFile } from "./compiler/index.js";
 import type { BehaviorDefinition, CompilerProjectContext } from "./compiler/project-context.js";
 import type { CompileOptions, Diagnostic, ProjectCompileResult } from "./model.js";
@@ -16,6 +16,15 @@ function diagnostic(file: ts.SourceFile, node: ts.Node, message: string): Diagno
     column: position.character + 1,
     message
   };
+}
+
+function uniqueDiagnostics(diagnostics: readonly Diagnostic[]): Diagnostic[] {
+  const unique = new Map<string, Diagnostic>();
+  for (const item of diagnostics) {
+    const key = `${normalized(item.file)}:${item.line}:${item.column}:${item.message}`;
+    if (!unique.has(key)) unique.set(key, item);
+  }
+  return [...unique.values()];
 }
 
 function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
@@ -67,15 +76,18 @@ function importedSourceFiles(program: ts.Program, entry: ts.SourceFile): {
   diagnostics: Diagnostic[];
 } {
   const compilerOptions = program.getCompilerOptions();
-  const seen = new Set<string>();
+  const completed = new Set<string>();
+  const activeIndexes = new Map<string, number>();
+  const activeFiles: ts.SourceFile[] = [];
   const files: ts.SourceFile[] = [];
   const directDependencies = new Map<ts.SourceFile, ts.SourceFile[]>();
   const diagnostics: Diagnostic[] = [];
 
   const visit = (sourceFile: ts.SourceFile): void => {
     const key = normalized(sourceFile.fileName);
-    if (seen.has(key)) return;
-    seen.add(key);
+    if (completed.has(key)) return;
+    activeIndexes.set(key, activeFiles.length);
+    activeFiles.push(sourceFile);
     const dependencies: ts.SourceFile[] = [];
     for (const statement of sourceFile.statements) {
       if ((!ts.isImportDeclaration(statement) && !ts.isExportDeclaration(statement)) || !statement.moduleSpecifier) continue;
@@ -101,8 +113,24 @@ function importedSourceFiles(program: ts.Program, entry: ts.SourceFile): {
         continue;
       }
       if (!dependencies.includes(dependency)) dependencies.push(dependency);
+      const dependencyKey = normalized(dependency.fileName);
+      const cycleStart = activeIndexes.get(dependencyKey);
+      if (cycleStart !== undefined) {
+        const cycle = [...activeFiles.slice(cycleStart), dependency]
+          .map((file) => relative(dirname(entry.fileName), file.fileName).replaceAll("\\", "/") || basename(file.fileName))
+          .join(" -> ");
+        diagnostics.push(diagnostic(
+          sourceFile,
+          statement.moduleSpecifier,
+          `Warning: 循環importを検出しました: ${cycle}。循環importはCompileErrorです`
+        ));
+        continue;
+      }
       visit(dependency);
     }
+    activeFiles.pop();
+    activeIndexes.delete(key);
+    completed.add(key);
     directDependencies.set(sourceFile, dependencies);
     files.push(sourceFile);
   };
@@ -174,7 +202,7 @@ export function compileProject(entryFile: string, options: CompileOptions = {}):
       behaviorsById.set(behavior.id, behavior);
     }
   }
-  if (graph.diagnostics.length > 0) return { artifacts: [], diagnostics: graph.diagnostics };
+  if (graph.diagnostics.length > 0) return { artifacts: [], diagnostics: uniqueDiagnostics(graph.diagnostics) };
 
   const project: CompilerProjectContext = {
     checker: program.getTypeChecker(),
@@ -189,7 +217,8 @@ export function compileProject(entryFile: string, options: CompileOptions = {}):
     diagnostics.push(...result.diagnostics);
     artifacts.push({ sourceFile: normalized(sourceFile.fileName), assembly: result.assembly });
   }
-  return { artifacts: diagnostics.length > 0 ? [] : artifacts, diagnostics };
+  const unique = uniqueDiagnostics(diagnostics);
+  return { artifacts: unique.length > 0 ? [] : artifacts, diagnostics: unique };
 }
 
 export function defaultAssemblyPath(sourceFile: string): string {

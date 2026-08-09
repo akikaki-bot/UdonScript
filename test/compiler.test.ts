@@ -180,6 +180,19 @@ test("inlines typed user functions", () => {
   assert.doesNotMatch(assembly, /\.export twice/);
 });
 
+test("treats top-level arrow and function expressions as inline functions", () => {
+  const assembly = successful(`
+    const multiply = (left: uint, right: uint): uint => left * right;
+    const double = function(value: uint): uint { return multiply(2, value); };
+
+    on("Start", () => {
+      Debug.log(double(4));
+    });
+  `);
+  assert.match(assembly, /SystemUInt32\.__op_Multiplication/);
+  assert.doesNotMatch(assembly, /multiply: %|double: %/);
+});
+
 test("maps event parameters to their required heap symbols", () => {
   const assembly = successful(`
     on("OnPlayerJoined", (player: VRCPlayerApi) => {
@@ -261,6 +274,20 @@ test("compiles UdonBehaviour classes, fields, this access and methods", () => {
   assert.doesNotMatch(assembly, /\.export count/);
   assert.match(assembly, /\.export _start/);
   assert.match(assembly, /SystemInt32\.__op_Multiplication/);
+});
+
+test("infers private method return types from typed parameters", () => {
+  const assembly = successful(`
+    export class MathComponent extends UdonBehaviour {
+      private identity(value: uint) { return value; }
+
+      public Start(): void {
+        const result = this.identity(3);
+        Debug.log(result);
+      }
+    }
+  `);
+  assert.match(assembly, /identity_return.*%SystemUInt32/);
 });
 
 test("uses real Udon externs for booleans and string concatenation", () => {

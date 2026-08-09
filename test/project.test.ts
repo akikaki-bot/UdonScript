@@ -106,3 +106,66 @@ test("resolves transitive re-exports and anonymous default functions", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("rejects transitive circular imports with the complete cycle path", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "udonscript-project-"));
+  try {
+    const entry = resolve(directory, "main.ts");
+    writeFileSync(entry, `import { a } from "./a.js"; export const main: int = a;`, "utf8");
+    writeFileSync(resolve(directory, "a.ts"), `import { b } from "./b.js"; export const a: int = b;`, "utf8");
+    writeFileSync(resolve(directory, "b.ts"), `import { main } from "./main.js"; export const b: int = main;`, "utf8");
+
+    const result = compileProject(entry);
+    assert.equal(result.artifacts.length, 0);
+    assert.equal(result.diagnostics.length, 1);
+    assert.match(result.diagnostics[0]!.message, /Warning: 循環import/);
+    assert.match(result.diagnostics[0]!.message, /main\.ts -> a\.ts -> b\.ts -> main\.ts/);
+    assert.match(result.diagnostics[0]!.message, /CompileError/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("imports exported arrow functions and removes duplicate diagnostics", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "udonscript-project-"));
+  try {
+    const entry = resolve(directory, "main.ts");
+    writeFileSync(resolve(directory, "numberUtil.ts"), `
+      export const getNdouble = (n: uint, number: uint): uint => n * number;
+    `, "utf8");
+    writeFileSync(resolve(directory, "util.ts"), `
+      import { getNdouble } from "./numberUtil.js";
+      export const getDouble = (number: uint): uint => getNdouble(2, number);
+    `, "utf8");
+    writeFileSync(entry, `
+      import { getDouble } from "./util.js";
+
+      export class BaseComponent extends UdonBehaviour {
+        @udonVariable
+        public isEnabled: bool = false;
+
+        public override OnEnable() {
+          this.isEnabled = true;
+          Debug.log(this.getDouble(3));
+        }
+
+        private getDouble(number: uint) {
+          return getDouble(number);
+        }
+      }
+    `, "utf8");
+
+    const result = compileProject(entry);
+    assert.deepEqual(result.diagnostics, []);
+    assert.match(result.artifacts.at(-1)!.assembly, /SystemUInt32\.__op_Multiplication/);
+
+    writeFileSync(resolve(directory, "numberUtil.ts"), `export const unsupported = {};`, "utf8");
+    writeFileSync(resolve(directory, "util.ts"), `export { unsupported } from "./numberUtil.js";`, "utf8");
+    writeFileSync(entry, `import { unsupported } from "./util.js"; on("Start", () => Debug.log("loaded"));`, "utf8");
+    const invalid = compileProject(entry);
+    assert.equal(invalid.artifacts.length, 0);
+    assert.equal(invalid.diagnostics.length, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
