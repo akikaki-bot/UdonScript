@@ -142,6 +142,8 @@ export function generateDeclarations(definitions: readonly ExternDefinition[]): 
     "declare function udonVariable<This, Value>(value: undefined, context: ClassFieldDecoratorContext<This, Value>): void;",
     "declare function udonVariable(options: UdonVariableOptions): UdonVariableDecorator;",
     "declare function udonVariable<T>(initialValue?: T, options?: UdonVariableOptions): T;",
+    "declare function comptime<T>(factory: () => T): T;",
+    "declare function comptime<This, Args extends unknown[], Return>(value: (this: This, ...args: Args) => Return, context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Return>): void;",
     ...eventRegistrationLines(),
     "declare abstract class UdonBehaviour {",
     "  readonly gameObject: GameObject;",

@@ -12,6 +12,7 @@
     "movement-booster.ts",
     "event-completion.ts",
     "arrays.ts",
+    "comptime.ts",
     "modules/math.ts",
     "modules/door-controller.ts",
     "modules/door-button.ts"

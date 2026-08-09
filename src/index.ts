@@ -12,6 +12,7 @@ export type {
   EventDefinition,
   ExternDefinition,
   ExternParameter,
+  OptimizationStats,
   ParameterMode,
   ProjectCompileResult,
   UdonNodeDump,

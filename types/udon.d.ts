@@ -29,6 +29,8 @@ type UdonVariableDecorator = <This, Value>(value: undefined, context: ClassField
 declare function udonVariable<This, Value>(value: undefined, context: ClassFieldDecoratorContext<This, Value>): void;
 declare function udonVariable(options: UdonVariableOptions): UdonVariableDecorator;
 declare function udonVariable<T>(initialValue?: T, options?: UdonVariableOptions): T;
+declare function comptime<T>(factory: () => T): T;
+declare function comptime<This, Args extends unknown[], Return>(value: (this: This, ...args: Args) => Return, context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Return>): void;
 declare function on(event: "OnEnable", handler: () => void): void;
 declare function on(event: "Start", handler: () => void): void;
 declare function on(event: "Update", handler: () => void): void;

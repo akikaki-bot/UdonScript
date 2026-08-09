@@ -215,7 +215,11 @@ export function compileProject(entryFile: string, options: CompileOptions = {}):
   for (const sourceFile of graph.files) {
     const result = compileSourceFile(sourceFile, options, project);
     diagnostics.push(...result.diagnostics);
-    artifacts.push({ sourceFile: normalized(sourceFile.fileName), assembly: result.assembly });
+    artifacts.push({
+      sourceFile: normalized(sourceFile.fileName),
+      assembly: result.assembly,
+      ...(result.stats ? { stats: result.stats } : {})
+    });
   }
   const unique = uniqueDiagnostics(diagnostics);
   return { artifacts: unique.length > 0 ? [] : artifacts, diagnostics: unique };

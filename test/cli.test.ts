@@ -63,7 +63,35 @@ test("CLI emits the entry and every relative TypeScript dependency", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(customEntryOutput), true);
     assert.equal(existsSync(resolve(directory, "math.uasm")), true);
-    assert.match(readFileSync(customEntryOutput, "utf8"), /SystemSingle\.__op_Multiplication/);
+    assert.match(readFileSync(customEntryOutput, "utf8"), /%SystemSingle, 4/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("CLI can disable optimization and print per-module statistics", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "udon-ts-cli-"));
+  try {
+    const input = resolve(directory, "main.ts");
+    const optimized = resolve(directory, "optimized.uasm");
+    const raw = resolve(directory, "raw.uasm");
+    writeFileSync(input, `on("Start", () => Debug.log((2 as uint) * (3 as uint)));`, "utf8");
+
+    const optimizedResult = spawnSync(process.execPath, [
+      resolve("dist/cli.js"), input, "-o", optimized, "--stats"
+    ], { cwd: resolve("."), encoding: "utf8" });
+    assert.equal(optimizedResult.status, 0, optimizedResult.stderr);
+    assert.doesNotMatch(readFileSync(optimized, "utf8"), /op_Multiplication/);
+    assert.match(optimizedResult.stdout, /Optimization .*main\.ts/);
+    assert.match(optimizedResult.stdout, /constants folded: 1/);
+
+    const rawResult = spawnSync(process.execPath, [
+      resolve("dist/cli.js"), input, "-o", raw, "--no-optimize", "--stats"
+    ], { cwd: resolve("."), encoding: "utf8" });
+    assert.equal(rawResult.status, 0, rawResult.stderr);
+    assert.match(readFileSync(raw, "utf8"), /op_Multiplication/);
+    assert.match(rawResult.stdout, /instructions\s+(\d+) -> \1/);
+    assert.match(rawResult.stdout, /constants folded: 0/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

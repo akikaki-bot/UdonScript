@@ -14,6 +14,13 @@ import { eventsBySourceName } from "../events.js";
 import { ExpressionTypeInferer } from "./expression-type-inference.js";
 import { EventEmitterParser } from "./event-emitter.js";
 import { UdonVariableParser, type UdonVariableMarker } from "./udon-variable.js";
+import {
+  ComptimeEvaluator,
+  type ComptimeConstant,
+  type ComptimeValue,
+  encodeComptimeScalar
+} from "./comptime-evaluator.js";
+import { InlineOptimizer } from "./inline-optimizer.js";
 import type { BehaviorDefinition, CompilerProjectContext } from "./project-context.js";
 import { binaryExtern, ExternRegistry, unaryExtern } from "../extern-registry.js";
 import type {
@@ -44,9 +51,11 @@ class Compiler {
   private readonly arrays: ArrayLowerer;
   private readonly eventEmitter: EventEmitterParser;
   private readonly udonVariables: UdonVariableParser;
+  private readonly comptime: ComptimeEvaluator;
+  private readonly inlineOptimizer: InlineOptimizer;
   private readonly selfReceiver: ValueRef;
   private readonly diagnostics: Diagnostic[] = [];
-  private readonly assembly = new AssemblyBuilder();
+  private readonly assembly: AssemblyBuilder;
   private readonly functions = new Map<string, FunctionInfo>();
   private readonly entries: FunctionInfo[] = [];
   private readonly eventNameValues = new Map<string, ValueRef>();
@@ -65,6 +74,7 @@ class Compiler {
       ? ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
       : source;
     this.project = project;
+    this.assembly = new AssemblyBuilder(options.optimize !== false);
     this.registry = new ExternRegistry(options.externs);
     this.typeInference = new ExpressionTypeInferer({
       functionReturnType: (name) => this.functions.get(name)?.returnType,
@@ -83,6 +93,17 @@ class Compiler {
     });
     this.eventEmitter = new EventEmitterParser((message, node) => this.fail(message, node));
     this.udonVariables = new UdonVariableParser((message, node) => this.fail(message, node));
+    this.comptime = new ComptimeEvaluator({
+      resolveFunction: (call) => this.resolveComptimeFunction(call),
+      resolveConstant: (identifier) => this.resolveComptimeConstant(identifier),
+      requireType: (node) => this.requireType(node),
+      fail: (message, node) => this.fail(message, node)
+    });
+    this.inlineOptimizer = new InlineOptimizer({
+      externs: this.registry.definitions,
+      resolveFunction: (call) => this.resolveComptimeFunction(call),
+      isComptimeCall: (node) => this.isComptimeCall(node)
+    });
     this.selfReceiver = this.allocate(
       "__this_udonBehaviour",
       "VRCUdonCommonInterfacesIUdonEventReceiver",
@@ -135,7 +156,9 @@ class Compiler {
       this.emit("JUMP, 0xFFFFFFFC");
     }
 
-    return { assembly: this.assembly.render(), diagnostics: this.diagnostics };
+    const assembly = this.assembly.render();
+    const stats = this.assembly.stats();
+    return { assembly, diagnostics: this.diagnostics, ...(stats ? { stats } : {}) };
   }
 
   private collectDeclarations(): void {
@@ -214,18 +237,24 @@ class Compiler {
               this.collectGlobal(member, Boolean(marker), marker?.sync, marker);
             } catch (error) { this.capture(error, member); }
           } else if (ts.isMethodDeclaration(member) && member.name && ts.isIdentifier(member.name)) {
-            const name = member.name.text;
-            const isPublic = !this.hasModifier(member, ts.SyntaxKind.PrivateKeyword) &&
-              !this.hasModifier(member, ts.SyntaxKind.ProtectedKeyword);
-            const event = this.eventForName(name, member.parameters.length);
-            this.registerFunction(
-              member,
-              name,
-              isPublic || Boolean(event),
-              event?.returns ?? "SystemVoid",
-              true,
-              event ? "event" : "method"
-            );
+            try {
+              const name = member.name.text;
+              const isPublic = !this.hasModifier(member, ts.SyntaxKind.PrivateKeyword) &&
+                !this.hasModifier(member, ts.SyntaxKind.ProtectedKeyword);
+              const event = this.eventForName(name, member.parameters.length);
+              const comptime = this.hasDecorator(member, "comptime");
+              if (comptime && isPublic) this.fail("@comptimeメソッドはprivateまたはprotectedにしてください", member);
+              this.registerFunction(
+                member,
+                name,
+                isPublic || Boolean(event),
+                event?.returns ?? "SystemVoid",
+                true,
+                event ? "event" : "method",
+                undefined,
+                comptime
+              );
+            } catch (error) { this.capture(error, member); }
           }
         }
       }
@@ -284,11 +313,14 @@ class Compiler {
       const initializer = marker && ts.isVariableDeclaration(declaration)
         ? marker.initializer
         : declaration.initializer;
-      const type = declaredType ?? markerType ?? (initializer
+      const comptimeValue = initializer && this.isComptimeCall(initializer)
+        ? this.comptime.evaluateFactory(initializer as ts.CallExpression)
+        : undefined;
+      const type = declaredType ?? markerType ?? comptimeValue?.type ?? (initializer
         ? this.inferLiteralType(initializer)
         : undefined);
       if (!type) this.fail(`変数 '${name}' にはUdon型注釈が必要です`, declaration);
-      const constant = initializer ? this.dataLiteral(initializer, type) : undefined;
+      const constant = comptimeValue ? encodeComptimeScalar(comptimeValue) : initializer ? this.dataLiteral(initializer, type) : undefined;
       const target = this.allocate(symbolBase ?? name, type, constant ?? defaultValue(type), {
         exported,
         exact,
@@ -311,7 +343,8 @@ class Compiler {
     defaultReturn: UdonType = "SystemVoid",
     registerForCalls = true,
     entryKind: "event" | "method" = "event",
-    referenceDeclaration?: ts.Declaration
+    referenceDeclaration?: ts.Declaration,
+    comptime = false
   ): void {
     try {
       const returnType = node.type
@@ -319,7 +352,7 @@ class Compiler {
         : entry && entryKind === "event"
           ? defaultReturn
           : this.inferFunctionReturnType(node, defaultReturn);
-      const info: FunctionInfo = { node, name, returnType, entry, ...(entry ? { entryKind } : {}) };
+      const info: FunctionInfo = { node, name, returnType, entry, ...(entry ? { entryKind } : {}), ...(comptime ? { comptime } : {}) };
       if (registerForCalls) this.functions.set(name, info);
       this.functionsByDeclaration.set(node, info);
       if (referenceDeclaration) this.functionsByDeclaration.set(referenceDeclaration, info);
@@ -539,8 +572,7 @@ class Compiler {
       const elseLabel = this.uniqueLabel("if_else");
       const endLabel = this.uniqueLabel("if_end");
       const condition = this.compileExpression(statement.expression, scope, "SystemBoolean", flow);
-      this.emit(`PUSH, ${condition.symbol}`);
-      this.emit(`JUMP_IF_FALSE, ${elseLabel}`);
+      this.jumpIfFalse(condition, elseLabel);
       this.compileStatement(statement.thenStatement, new Scope(scope), flow);
       this.emit(`JUMP, ${endLabel}`);
       this.label(elseLabel);
@@ -553,8 +585,7 @@ class Compiler {
       const endLabel = this.uniqueLabel("while_end");
       this.label(testLabel);
       const condition = this.compileExpression(statement.expression, scope, "SystemBoolean", flow);
-      this.emit(`PUSH, ${condition.symbol}`);
-      this.emit(`JUMP_IF_FALSE, ${endLabel}`);
+      this.jumpIfFalse(condition, endLabel);
       this.compileStatement(statement.statement, new Scope(scope), { ...flow, breakLabel: endLabel, continueLabel: testLabel });
       this.emit(`JUMP, ${testLabel}`);
       this.label(endLabel);
@@ -574,8 +605,7 @@ class Compiler {
       this.label(testLabel);
       if (statement.condition) {
         const condition = this.compileExpression(statement.condition, loopScope, "SystemBoolean", flow);
-        this.emit(`PUSH, ${condition.symbol}`);
-        this.emit(`JUMP_IF_FALSE, ${endLabel}`);
+        this.jumpIfFalse(condition, endLabel);
       }
       this.compileStatement(statement.statement, loopScope, { ...flow, breakLabel: endLabel, continueLabel: incrementLabel });
       this.label(incrementLabel);
@@ -677,8 +707,7 @@ class Compiler {
       const falseLabel = this.uniqueLabel("conditional_false");
       const endLabel = this.uniqueLabel("conditional_end");
       const condition = this.compileExpression(node.condition, scope, "SystemBoolean", flow);
-      this.emit(`PUSH, ${condition.symbol}`);
-      this.emit(`JUMP_IF_FALSE, ${falseLabel}`);
+      this.jumpIfFalse(condition, falseLabel);
       this.copy(this.compileExpression(node.whenTrue, scope, resultType, flow), result, node.whenTrue);
       this.emit(`JUMP, ${endLabel}`);
       this.label(falseLabel);
@@ -732,16 +761,14 @@ class Compiler {
     const endLabel = this.uniqueLabel("logical_end");
     const left = this.compileExpression(node.left, scope, "SystemBoolean", flow);
     if (operator === "&&") {
-      this.emit(`PUSH, ${left.symbol}`);
-      this.emit(`JUMP_IF_FALSE, ${shortLabel}`);
+      this.jumpIfFalse(left, shortLabel);
       this.copy(this.compileExpression(node.right, scope, "SystemBoolean", flow), result, node.right);
       this.emit(`JUMP, ${endLabel}`);
       this.label(shortLabel);
       this.copy(left, result, node.left);
     } else {
       const evaluateRight = this.uniqueLabel("logical_right");
-      this.emit(`PUSH, ${left.symbol}`);
-      this.emit(`JUMP_IF_FALSE, ${evaluateRight}`);
+      this.jumpIfFalse(left, evaluateRight);
       this.copy(left, result, node.left);
       this.emit(`JUMP, ${endLabel}`);
       this.label(evaluateRight);
@@ -763,6 +790,9 @@ class Compiler {
   }
 
   private compileCall(node: ts.CallExpression, scope: Scope, expected: UdonType | undefined, flow: FlowContext): ValueRef {
+    if (this.isComptimeCall(node)) {
+      return this.materializeComptime(this.comptime.evaluateFactory(node), node, scope, expected, flow);
+    }
     if (ts.isIdentifier(node.expression) && node.expression.text === "extern") {
       return this.compileRawExtern(node, scope, expected, flow);
     }
@@ -973,7 +1003,7 @@ class Compiler {
     else if (expected) returnType = expected;
     const args = node.arguments.slice(1).map((argument) => this.compileExpression(argument, scope, undefined, flow));
     const output = returnType === "SystemVoid" ? undefined : this.allocate("extern_result", returnType);
-    this.emitExtern(signatureNode.text, args, output);
+    this.emitExtern(signatureNode.text, args, output, true);
     return output ?? { symbol: "", type: "SystemVoid" };
   }
 
@@ -1070,20 +1100,39 @@ class Compiler {
     if (!body) this.fail(`関数 '${fn.name}' に本体がありません`, fn.node);
     if (this.callStack.includes(fn)) this.fail(`再帰呼び出し '${fn.name}' はUdon VMでは安全に展開できません`, call);
     if (call.arguments.length !== fn.node.parameters.length) this.fail(`関数 '${fn.name}' の引数の数が違います`, call);
+    if (fn.comptime) {
+      return this.materializeComptime(this.comptime.evaluateCall(fn, call), call, callerScope, expected, outerFlow);
+    }
     this.callStack.push(fn);
     try {
       const scope = new Scope(this.globalScope);
+      const directReturn = this.inlineOptimizer.directReturnExpression(fn.node);
+      const canForwardParameters = this.inlineOptimizer.canForwardParameters(fn.node);
       fn.node.parameters.forEach((parameter, index) => {
         if (!ts.isIdentifier(parameter.name)) this.fail("分割代入パラメータは使えません", parameter.name);
         if (!parameter.type) this.fail(`引数 '${parameter.name.text}' に型注釈が必要です`, parameter);
         const type = this.requireType(parameter.type);
         const argument = this.compileExpression(call.arguments[index]!, callerScope, type, outerFlow);
+        if (canForwardParameters && !this.inlineOptimizer.parameterRequiresStorage(fn.node, parameter.name.text)) {
+          scope.set(parameter.name.text, argument);
+          return;
+        }
         const local = this.allocate(`${fn.name}_${parameter.name.text}`, type);
         const behavior = this.behaviorForTypeNode(parameter.type);
         if (behavior) local.behaviorType = behavior.id;
         this.copy(argument, local, call.arguments[index]!);
         scope.set(parameter.name.text, local);
       });
+      if (directReturn && this.inlineOptimizer.canForwardReturn(fn.node, call)) {
+        const value = this.compileExpression(
+          directReturn,
+          scope,
+          fn.returnType === "SystemVoid" ? undefined : fn.returnType,
+          outerFlow
+        );
+        this.assertAssignable(value.type, expected, call);
+        return value;
+      }
       const result = fn.returnType === "SystemVoid" ? undefined : this.allocate(`${fn.name}_return`, fn.returnType);
       const returnBehavior = fn.node.type ? this.behaviorForTypeNode(fn.node.type) : undefined;
       if (result && returnBehavior) result.behaviorType = returnBehavior.id;
@@ -1106,6 +1155,7 @@ class Compiler {
   }
 
   private inferExpressionType(node: ts.Expression, scope: Scope): UdonType | undefined {
+    if (this.isComptimeCall(node)) return this.comptime.evaluateFactory(node as ts.CallExpression).type;
     if (ts.isCallExpression(node)) {
       const reference = ts.isIdentifier(node.expression)
         ? node.expression
@@ -1255,6 +1305,83 @@ class Compiler {
     return declaration && ts.isVariableDeclaration(declaration) ? this.globalsByDeclaration.get(declaration) : undefined;
   }
 
+  private isComptimeCall(node: ts.Expression): boolean {
+    return ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "comptime";
+  }
+
+  private resolveComptimeFunction(call: ts.CallExpression): FunctionInfo | undefined {
+    let info: FunctionInfo | undefined;
+    if (ts.isIdentifier(call.expression)) {
+      info = this.functionForReference(call.expression) ?? this.functions.get(call.expression.text);
+    } else if (ts.isPropertyAccessExpression(call.expression)) {
+      info = this.functionForReference(call.expression.name);
+      if (!info && call.expression.expression.kind === ts.SyntaxKind.ThisKeyword) {
+        info = this.functions.get(call.expression.name.text);
+      }
+    }
+    return info;
+  }
+
+  private resolveComptimeConstant(identifier: ts.Identifier): ComptimeConstant | undefined {
+    let declaration = this.declarationForReference(identifier);
+    if (!declaration) {
+      for (const statement of this.sourceFile.statements) {
+        if (!ts.isVariableStatement(statement)) continue;
+        const found = statement.declarationList.declarations.find((item) =>
+          ts.isIdentifier(item.name) && item.name.text === identifier.text);
+        if (found) {
+          declaration = found;
+          break;
+        }
+      }
+    }
+    if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer ||
+      !ts.isVariableDeclarationList(declaration.parent) ||
+      (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+      ts.isArrowFunction(declaration.initializer) || ts.isFunctionExpression(declaration.initializer)) {
+      return undefined;
+    }
+    return {
+      initializer: declaration.initializer,
+      ...(declaration.type ? { type: this.requireType(declaration.type) } : {})
+    };
+  }
+
+  private materializeComptime(
+    value: ComptimeValue,
+    node: ts.Node,
+    scope: Scope,
+    expected: UdonType | undefined,
+    flow: FlowContext
+  ): ValueRef {
+    this.assertAssignable(value.type, expected, node);
+    if (Array.isArray(value.value)) {
+      const expression = this.comptimeValueExpression(value);
+      if (!ts.isArrayLiteralExpression(expression)) this.fail("comptime配列を生成できません", node);
+      return this.arrays.compileLiteral(expression, scope, value.type, flow);
+    }
+    if (value.type === "SystemBoolean" && typeof value.value === "boolean") {
+      const expression = value.value ? ts.factory.createTrue() : ts.factory.createFalse();
+      return this.compileExpression(expression, scope, expected ?? value.type, flow);
+    }
+    const initial = encodeComptimeScalar(value);
+    if (initial === undefined) this.fail(`${sourceTypeName(value.type)}のcomptime値をUASMへ変換できません`, node);
+    return this.allocate("comptime", value.type, initial);
+  }
+
+  private comptimeValueExpression(value: ComptimeValue): ts.Expression {
+    if (Array.isArray(value.value)) {
+      return ts.factory.createArrayLiteralExpression(value.value.map((item) => this.comptimeValueExpression(item)));
+    }
+    if (value.value === null) return ts.factory.createNull();
+    if (typeof value.value === "boolean") return value.value ? ts.factory.createTrue() : ts.factory.createFalse();
+    if (typeof value.value === "string") return ts.factory.createStringLiteral(value.value);
+    const text = value.value.toString();
+    return text.startsWith("-")
+      ? ts.factory.createPrefixUnaryExpression(ts.SyntaxKind.MinusToken, ts.factory.createNumericLiteral(text.slice(1)))
+      : ts.factory.createNumericLiteral(text);
+  }
+
   private assertAssignable(actual: UdonType, expected: UdonType | undefined, node: ts.Node): void {
     if (!expected || expected === actual || expected === "SystemObject" || actual === "SystemVoid") return;
     this.fail(`${sourceTypeName(actual)} を ${sourceTypeName(expected)} として使用できません`, node);
@@ -1262,19 +1389,25 @@ class Compiler {
 
   private copy(source: ValueRef, target: ValueRef, node: ts.Node): void {
     this.assertAssignable(source.type, target.type, node);
-    this.emit(`PUSH, ${source.symbol}`);
-    this.emit(`PUSH, ${target.symbol}`);
-    this.emit("COPY");
+    this.assembly.copy(source, target);
   }
 
   private copyUnchecked(source: ValueRef, target: ValueRef): void {
-    this.emit(`PUSH, ${source.symbol}`);
-    this.emit(`PUSH, ${target.symbol}`);
-    this.emit("COPY");
+    this.assembly.copy(source, target);
   }
 
-  private emitExtern(signature: string, args: readonly ValueRef[], output?: ValueRef): void {
-    this.assembly.emitExtern(signature, args, output);
+  private emitExtern(signature: string, args: readonly ValueRef[], output?: ValueRef, conservativeMutates = false): void {
+    const definition = this.registry.definitions.find((item) => item.signature === signature);
+    const mutates = conservativeMutates
+      ? args
+      : definition
+        ? definition.parameters.flatMap((parameter, index) => {
+            if (parameter.mode !== "ref" && parameter.mode !== "out") return [];
+            const argument = args[index + (definition.static ? 0 : 1)];
+            return argument ? [argument] : [];
+          })
+        : [];
+    this.assembly.emitExtern(signature, args, output, mutates);
   }
 
   private allocate(base: string, type: UdonType, initial = defaultValue(type), options: AllocationOptions = {}): ValueRef {
@@ -1284,10 +1417,16 @@ class Compiler {
   private label(label: string): void {
     this.assembly.label(label);
   }
+  private jumpIfFalse(condition: ValueRef, target: string): void { this.assembly.jumpIfFalse(condition, target); }
   private emit(line: string): void { this.assembly.emit(line); }
   private uniqueLabel(base: string): string { return this.assembly.uniqueLabel(base); }
   private hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
     return ts.canHaveModifiers(node) && (ts.getModifiers(node)?.some((modifier) => modifier.kind === kind) ?? false);
+  }
+  private hasDecorator(node: ts.Node, name: string): boolean {
+    if (!ts.canHaveDecorators(node)) return false;
+    return (ts.getDecorators(node) ?? []).some((decorator) =>
+      ts.isIdentifier(decorator.expression) && decorator.expression.text === name);
   }
   private sourceComment(node: ts.Node): void {
     if (!this.options.sourceMapComments) return;

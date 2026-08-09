@@ -212,6 +212,58 @@ on("Interact", () => {
 
 現在の制御構文は `if/else`, `while`, `for`, `break`, `continue`, `return`, 三項演算子、短絡する `&&` / `||` です。基本型は `bool`, `int`, `uint`, `float`, `double`, `string` と、定義済みUnity/VRChat型です。
 
+### コンパイラー最適化と`comptime`
+
+最適化は標準で有効です。純粋な単一`return`関数では安全な引数・戻り値を直接転送し、関数をまたぐ不要なHeap変数と`COPY`を省きます。その後、Udon IR上で定数畳み込み、同一定数の共有、未使用のHeap・`COPY`・副作用のない`EXTERN`の除去を行います。
+
+```ts
+function multiply(n: uint, value: uint): uint {
+  return n * value;
+}
+
+function twice(value: uint): uint {
+  return multiply(2, value);
+}
+
+on("Start", () => Debug.log(twice(3)));
+```
+
+この例は実行時の関数用引数・戻り値Heapを作らず、最終的に`6u`へ畳み込まれます。Inspector公開値、イベント引数、外部から書き換わる可能性がある値は、data sectionの初期値を使って定数扱いしません。
+
+必ずコンパイル時に計算したい処理には`comptime`を使用します。トップレベルでは引数なしのファクトリ関数、`UdonBehaviour`クラスではprivateまたはprotectedメソッドの`@comptime`を使用します。
+
+```ts
+function buildTable(): uint[] {
+  const values: uint[] = [0, 0, 0, 0];
+  for (let index: int = 0; index < values.length; index++) {
+    values[index] = (index as uint) * 2;
+  }
+  return values;
+}
+
+const table: uint[] = comptime((): uint[] => buildTable());
+
+export class ItemIds extends UdonBehaviour {
+  @comptime
+  private makeId(category: uint, index: uint): uint {
+    return category * 100 + index;
+  }
+
+  public override Start(): void {
+    Debug.log(this.makeId(1, 23)); // UASMには123uとして格納
+  }
+}
+```
+
+`comptime`内では、整数・浮動小数点・文字列・真偽値の演算、`if`、`while`、`for`、配列、純粋なユーザー関数、許可された`Math` / `Mathf`関数（`sin`, `cos`, `clamp`, `abs`, `min`, `max`）を使用できます。Udonの`int` / `uint`の32bit wrapと`float`の32bit丸めを保ちます。実行時のInspector値、イベント引数、`Debug.log`などの副作用、未知のexternを参照するとCompileErrorになります。無限評価を防ぐため、評価ステップ数と呼び出し深度にも上限があります。
+
+最適化前後のHeap・命令・`COPY`・`EXTERN`数はCLIで確認できます。
+
+```sh
+udon-ts behaviour.ts --stats
+udon-ts behaviour.ts --no-optimize # 比較・デバッグ用
+```
+
 ### 配列
 
 Udonの型別配列externへ変換し、配列リテラル、長さ指定の生成、要素取得、要素代入、`length`を使用できます。空の配列には型注釈が必要です。
@@ -286,7 +338,7 @@ udon-ts <input.ts> [-o output.uasm] [--externs registry.json]
 
 `-o`は入力ファイルの出力先だけを変更します。相対importされたファイルの`.uasm`は、各`.ts`と同じディレクトリへ生成されます。
 
-`--source-comments` を付けると、元ファイルと行番号をAssemblyコメントとして埋め込みます。
+`--source-comments` を付けると、元ファイルと行番号をAssemblyコメントとして埋め込みます。`--stats`は各モジュールの最適化統計を表示し、`--no-optimize`は既定で有効なUdon IR最適化を無効にします。
 
 ## 現在の制限
 

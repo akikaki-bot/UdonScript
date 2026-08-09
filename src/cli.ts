@@ -5,7 +5,7 @@ import { compileProject, defaultAssemblyPath } from "./project-compiler.js";
 import { generateDeclarations } from "./declarations.js";
 import { ExternRegistry } from "./extern-registry.js";
 import { importNodeDump } from "./node-importer.js";
-import type { Diagnostic, ExternDefinition, UdonNodeDump } from "./model.js";
+import type { Diagnostic, ExternDefinition, OptimizationStats, UdonNodeDump } from "./model.js";
 
 interface Arguments {
   input?: string;
@@ -15,6 +15,8 @@ interface Arguments {
   registryOut?: string;
   externFiles: string[];
   sourceMapComments: boolean;
+  optimize: boolean;
+  stats: boolean;
   help: boolean;
 }
 
@@ -25,7 +27,13 @@ function requiredValue(argv: string[], index: number, option: string): string {
 }
 
 function parseArguments(argv: string[]): Arguments {
-  const result: Arguments = { externFiles: [], sourceMapComments: false, help: false };
+  const result: Arguments = {
+    externFiles: [],
+    sourceMapComments: false,
+    optimize: true,
+    stats: false,
+    help: false
+  };
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index]!;
     if (arg === "-h" || arg === "--help") result.help = true;
@@ -35,6 +43,8 @@ function parseArguments(argv: string[]): Arguments {
     else if (arg === "--import-nodes") result.importNodes = requiredValue(argv, ++index, arg);
     else if (arg === "--registry-out") result.registryOut = requiredValue(argv, ++index, arg);
     else if (arg === "--source-comments") result.sourceMapComments = true;
+    else if (arg === "--no-optimize") result.optimize = false;
+    else if (arg === "--stats") result.stats = true;
     else if (arg.startsWith("-")) throw new Error(`Unknown option: ${arg}`);
     else if (!result.input) result.input = arg;
     else throw new Error(`Only one input file can be compiled: ${arg}`);
@@ -57,8 +67,24 @@ Options:
   --import-nodes <file>  Import a Unity Udon Graph node dump
   --registry-out <file>  Write imported extern metadata as JSON
   --source-comments      Include source line comments in the assembly
+  --no-optimize          Disable UASM optimization (enabled by default)
+  --stats                Show optimization statistics for each emitted module
   -h, --help             Show this help
 `;
+}
+
+function saved(before: number, after: number): string {
+  const delta = after - before;
+  return delta === 0 ? "" : ` (${delta > 0 ? "+" : ""}${delta})`;
+}
+
+function reportStats(file: string, stats: OptimizationStats): void {
+  console.log(`Optimization ${displayPath(file)}`);
+  console.log(`  heap slots    ${stats.heapSlotsBefore} -> ${stats.heapSlotsAfter}${saved(stats.heapSlotsBefore, stats.heapSlotsAfter)}`);
+  console.log(`  instructions  ${stats.instructionsBefore} -> ${stats.instructionsAfter}${saved(stats.instructionsBefore, stats.instructionsAfter)}`);
+  console.log(`  COPY          ${stats.copiesBefore} -> ${stats.copiesAfter}${saved(stats.copiesBefore, stats.copiesAfter)}`);
+  console.log(`  EXTERN        ${stats.externCallsBefore} -> ${stats.externCallsAfter}${saved(stats.externCallsBefore, stats.externCallsAfter)}`);
+  console.log(`  constants folded: ${stats.constantsFolded}`);
 }
 
 function definitionsFromJson(value: unknown, file: string): ExternDefinition[] {
@@ -159,7 +185,12 @@ async function main(): Promise<void> {
   if (!args.input) return;
 
   const input = resolve(args.input);
-  const result = compileProject(input, { fileName: input, externs, sourceMapComments: args.sourceMapComments });
+  const result = compileProject(input, {
+    fileName: input,
+    externs,
+    sourceMapComments: args.sourceMapComments,
+    optimize: args.optimize
+  });
   if (result.diagnostics.length > 0) {
     await reportDiagnostics(result.diagnostics);
     process.exitCode = 1;
@@ -171,6 +202,7 @@ async function main(): Promise<void> {
       : defaultAssemblyPath(artifact.sourceFile);
     await writeFile(output, artifact.assembly, "utf8");
     console.log(`Generated ${output}`);
+    if (args.stats && artifact.stats) reportStats(artifact.sourceFile, artifact.stats);
   }
 }
 

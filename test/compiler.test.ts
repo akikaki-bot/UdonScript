@@ -175,9 +175,21 @@ test("inlines typed user functions", () => {
       Debug.log(result);
     });
   `);
-  assert.match(assembly, /twice_value/);
-  assert.match(assembly, /SystemSingle\.__op_Multiplication/);
+  assert.doesNotMatch(assembly, /twice_value|twice_return/);
+  assert.match(assembly, /%SystemSingle, 3/);
+  assert.doesNotMatch(assembly, /SystemSingle\.__op_Multiplication/);
   assert.doesNotMatch(assembly, /\.export twice/);
+});
+
+test("keeps a value snapshot when an inlined identity receives mutable storage", () => {
+  const assembly = successful(`
+    let source = udonVariable<int>(1);
+    function identity(value: int): int { return value; }
+    function update(): int { source = 2; return 0; }
+    on("Start", () => Debug.log(identity(source) + update()));
+  `);
+  assert.match(assembly, /identity_return/);
+  assert.match(assembly, /PUSH, source\s+PUSH, identity_return[^\n]*\s+COPY/);
 });
 
 test("treats top-level arrow and function expressions as inline functions", () => {
@@ -189,8 +201,120 @@ test("treats top-level arrow and function expressions as inline functions", () =
       Debug.log(double(4));
     });
   `);
-  assert.match(assembly, /SystemUInt32\.__op_Multiplication/);
+  assert.match(assembly, /%SystemUInt32, 8u/);
+  assert.doesNotMatch(assembly, /SystemUInt32\.__op_Multiplication/);
   assert.doesNotMatch(assembly, /multiply: %|double: %/);
+});
+
+test("evaluates scalar functions and loops with comptime", () => {
+  const result = compile(`
+    function sumTo(limit: uint): uint {
+      let total: uint = 0;
+      for (let index: uint = 0; index < limit; index++) total += index;
+      return total;
+    }
+
+    on("Start", () => {
+      Debug.log(comptime((): uint => sumTo(5)));
+    });
+  `);
+  assert.deepEqual(result.diagnostics, []);
+  assert.match(result.assembly, /%SystemUInt32, 10u/);
+  assert.doesNotMatch(result.assembly, /op_Addition|op_LessThan/);
+});
+
+test("evaluates comptime arrays and materializes only their final values", () => {
+  const result = compile(`
+    on("Start", () => {
+      const values: int[] = comptime((): int[] => {
+        const result: int[] = [0, 0, 0];
+        for (let index: int = 0; index < result.length; index++) result[index] = index * 2;
+        return result;
+      });
+      Debug.log(values[2]);
+    });
+  `);
+  assert.deepEqual(result.diagnostics, []);
+  assert.match(result.assembly, /%SystemInt32, 4/);
+  assert.doesNotMatch(result.assembly, /op_Multiplication|op_LessThan/);
+});
+
+test("evaluates private @comptime methods and rejects runtime inputs or side effects", () => {
+  const valid = compile(`
+    export class Ids extends UdonBehaviour {
+      @comptime
+      private id(category: uint, index: uint): uint { return category * 100 + index; }
+      public Start(): void { Debug.log(this.id(1, 23)); }
+    }
+  `);
+  assert.deepEqual(valid.diagnostics, []);
+  assert.match(valid.assembly, /%SystemUInt32, 123u/);
+  assert.doesNotMatch(valid.assembly, /op_Multiplication|op_Addition/);
+
+  const dynamic = compile(`
+    export class Invalid extends UdonBehaviour {
+      @udonVariable index: uint = 0;
+      @comptime private id(value: uint): uint { return value + 1; }
+      public Start(): void { Debug.log(this.id(this.index)); }
+    }
+  `);
+  assert.equal(dynamic.diagnostics.length, 1);
+  assert.match(dynamic.diagnostics[0]!.message, /comptime.*確定していません/);
+
+  const sideEffect = compile(`
+    on("Start", () => comptime((): uint => {
+      Debug.log("nope");
+      return 1;
+    }));
+  `);
+  assert.equal(sideEffect.diagnostics.length, 1);
+  assert.match(sideEffect.diagnostics[0]!.message, /純粋なユーザー関数とMath\/Mathf/);
+
+  const publicMethod = compile(`
+    export class Invalid extends UdonBehaviour {
+      @comptime public id(value: uint): uint { return value; }
+    }
+  `);
+  assert.equal(publicMethod.diagnostics.length, 1);
+  assert.match(publicMethod.diagnostics[0]!.message, /privateまたはprotected/);
+});
+
+test("lowers comptime boolean globals through valid Udon boolean instructions", () => {
+  const result = compile(`
+    const enabled: bool = comptime((): bool => true);
+    on("Start", () => Debug.log(enabled));
+  `);
+  assert.deepEqual(result.diagnostics, []);
+  assert.doesNotMatch(result.assembly, /%SystemBoolean, true/);
+  assert.match(result.assembly, /SystemBoolean\.__op_UnaryNegation/);
+});
+
+test("can disable IR optimization and reports optimization statistics", () => {
+  const source = `on("Start", () => Debug.log((2 as uint) * (3 as uint)));`;
+  const optimized = compile(source);
+  const raw = compile(source, { optimize: false });
+  assert.deepEqual(optimized.diagnostics, []);
+  assert.deepEqual(raw.diagnostics, []);
+  assert.doesNotMatch(optimized.assembly, /op_Multiplication/);
+  assert.match(raw.assembly, /op_Multiplication/);
+  assert.ok(optimized.stats);
+  assert.ok(optimized.stats.constantsFolded >= 1);
+  assert.ok(optimized.stats.instructionsAfter < optimized.stats.instructionsBefore);
+});
+
+test("never folds Inspector or event values from their data-section defaults", () => {
+  const inspector = compile(`
+    let speed = udonVariable<float>(2.5);
+    on("Start", () => Debug.log(speed * 2.0));
+  `);
+  assert.deepEqual(inspector.diagnostics, []);
+  assert.match(inspector.assembly, /SystemSingle\.__op_Multiplication/);
+
+  const event = compile(`
+    on("InputJump", (value, args) => Debug.log(value == true));
+  `);
+  assert.deepEqual(event.diagnostics, []);
+  assert.match(event.assembly, /SystemBoolean\.__op_Equality/);
 });
 
 test("maps event parameters to their required heap symbols", () => {
@@ -273,7 +397,8 @@ test("compiles UdonBehaviour classes, fields, this access and methods", () => {
   assert.match(assembly, /\.export message/);
   assert.doesNotMatch(assembly, /\.export count/);
   assert.match(assembly, /\.export _start/);
-  assert.match(assembly, /SystemInt32\.__op_Multiplication/);
+  assert.match(assembly, /%SystemInt32, 4/);
+  assert.doesNotMatch(assembly, /SystemInt32\.__op_Multiplication/);
 });
 
 test("infers private method return types from typed parameters", () => {
@@ -287,7 +412,8 @@ test("infers private method return types from typed parameters", () => {
       }
     }
   `);
-  assert.match(assembly, /identity_return.*%SystemUInt32/);
+  assert.match(assembly, /result_\d+: %SystemUInt32/);
+  assert.doesNotMatch(assembly, /identity_value|identity_return/);
 });
 
 test("uses real Udon externs for booleans and string concatenation", () => {
@@ -299,7 +425,8 @@ test("uses real Udon externs for booleans and string concatenation", () => {
     });
   `);
   assert.match(assembly, /SystemBoolean\.__op_UnaryNegation__SystemBoolean__SystemBoolean/);
-  assert.match(assembly, /SystemString\.__Concat__SystemString_SystemString__SystemString/);
+  assert.match(assembly, /%SystemString, "ab"/);
+  assert.doesNotMatch(assembly, /SystemString\.__Concat__SystemString_SystemString__SystemString/);
   assert.doesNotMatch(assembly, /SystemBoolean\.__Parse/);
 });
 

@@ -50,7 +50,8 @@ test("resolves imports, emits every module and lowers cross-behaviour calls", ()
     const main = result.artifacts.find((artifact) => basename(artifact.sourceFile) === "main.ts")!.assembly;
     const door = result.artifacts.find((artifact) => basename(artifact.sourceFile) === "door.ts")!.assembly;
     const math = result.artifacts.find((artifact) => basename(artifact.sourceFile) === "math.ts")!.assembly;
-    assert.match(main, /SystemSingle\.__op_Multiplication/);
+    assert.match(main, /%SystemSingle, 2/);
+    assert.doesNotMatch(main, /SystemSingle\.__op_Multiplication/);
     assert.match(main, /__SetProgramVariable__SystemString_SystemObject__SystemVoid/);
     assert.match(main, /__SendCustomEvent__SystemString__SystemVoid/);
     assert.match(main, /__GetProgramVariable__SystemString__SystemObject/);
@@ -101,7 +102,8 @@ test("resolves transitive re-exports and anonymous default functions", () => {
       result.artifacts.map((artifact) => basename(artifact.sourceFile)),
       ["math.ts", "api.ts", "main.ts"]
     );
-    assert.match(result.artifacts[2]!.assembly, /SystemInt32\.__op_Multiplication/);
+    assert.match(result.artifacts[2]!.assembly, /%SystemInt32, 12/);
+    assert.doesNotMatch(result.artifacts[2]!.assembly, /SystemInt32\.__op_Multiplication/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -157,7 +159,25 @@ test("imports exported arrow functions and removes duplicate diagnostics", () =>
 
     const result = compileProject(entry);
     assert.deepEqual(result.diagnostics, []);
-    assert.match(result.artifacts.at(-1)!.assembly, /SystemUInt32\.__op_Multiplication/);
+    const optimized = result.artifacts.at(-1)!.assembly;
+    assert.match(optimized, /%SystemUInt32, 6u/);
+    assert.doesNotMatch(optimized, /SystemUInt32\.__op_Multiplication/);
+    assert.doesNotMatch(optimized, /getDouble_number|getDouble_return|getNdouble_n|getNdouble_number|getNdouble_return/);
+
+    writeFileSync(entry, `
+      import { getDouble } from "./util.js";
+
+      export class BaseComponent extends UdonBehaviour {
+        @udonVariable public amount: uint = 3;
+        public override Start(): void { Debug.log(this.getDouble(this.amount)); }
+        private getDouble(number: uint): uint { return getDouble(number); }
+      }
+    `, "utf8");
+    const dynamic = compileProject(entry);
+    assert.deepEqual(dynamic.diagnostics, []);
+    const dynamicAssembly = dynamic.artifacts.at(-1)!.assembly;
+    assert.equal((dynamicAssembly.match(/SystemUInt32\.__op_Multiplication/g) ?? []).length, 1);
+    assert.doesNotMatch(dynamicAssembly, /getDouble_number|getDouble_return|getNdouble_n|getNdouble_number|getNdouble_return/);
 
     writeFileSync(resolve(directory, "numberUtil.ts"), `export const unsupported = {};`, "utf8");
     writeFileSync(resolve(directory, "util.ts"), `export { unsupported } from "./numberUtil.js";`, "utf8");

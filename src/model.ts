@@ -44,16 +44,31 @@ export interface CompileOptions {
   fileName?: string;
   externs?: ExternDefinition[];
   sourceMapComments?: boolean;
+  optimize?: boolean;
+}
+
+export interface OptimizationStats {
+  heapSlotsBefore: number;
+  heapSlotsAfter: number;
+  instructionsBefore: number;
+  instructionsAfter: number;
+  copiesBefore: number;
+  copiesAfter: number;
+  externCallsBefore: number;
+  externCallsAfter: number;
+  constantsFolded: number;
 }
 
 export interface CompileResult {
   assembly: string;
   diagnostics: Diagnostic[];
+  stats?: OptimizationStats;
 }
 
 export interface CompileArtifact {
   sourceFile: string;
   assembly: string;
+  stats?: OptimizationStats;
 }
 
 export interface ProjectCompileResult {

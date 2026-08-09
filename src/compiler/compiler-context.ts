@@ -18,6 +18,7 @@ export interface FunctionInfo {
   returnType: UdonType;
   entry: boolean;
   entryKind?: "event" | "method";
+  comptime?: boolean;
 }
 
 export interface FlowContext {
