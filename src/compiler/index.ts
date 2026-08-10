@@ -748,10 +748,7 @@ class Compiler {
       } else {
         const simpleOperator = operator.slice(0, -1);
         const right = this.compileExpression(node.right, scope, target.type, flow);
-        const extern = binaryExtern(simpleOperator, target.type, right.type);
-        if (!extern) this.fail(`演算子 '${operator}' は使えません`, node);
-        const result = this.allocate("assignment", extern.returns);
-        this.emitExtern(extern.signature, [target, right], result);
+        const result = this.compileBinaryOperation(simpleOperator, target, right, node);
         this.copy(result, target, node);
       }
       return target;
@@ -759,11 +756,40 @@ class Compiler {
     if (operator === "&&" || operator === "||") return this.compileLogical(node, operator, scope, flow);
     const left = this.compileExpression(node.left, scope, undefined, flow);
     const right = this.compileExpression(node.right, scope, left.type, flow);
+    const output = this.compileBinaryOperation(operator, left, right, node);
+    this.assertAssignable(output.type, expected, node);
+    return output;
+  }
+
+  private compileBinaryOperation(operator: string, left: ValueRef, right: ValueRef, node: ts.Node): ValueRef {
+    // Udon has no UInt32 modulus extern. This preserves the full unsigned range,
+    // unlike lowering through Int32.
+    if (operator === "%" && left.type === "SystemUInt32" && right.type === "SystemUInt32") {
+      const quotient = this.allocate("uintModulusQuotient", "SystemUInt32");
+      this.emitExtern(
+        "SystemUInt32.__op_Division__SystemUInt32_SystemUInt32__SystemUInt32",
+        [left, right],
+        quotient
+      );
+      const product = this.allocate("uintModulusProduct", "SystemUInt32");
+      this.emitExtern(
+        "SystemUInt32.__op_Multiplication__SystemUInt32_SystemUInt32__SystemUInt32",
+        [quotient, right],
+        product
+      );
+      const remainder = this.allocate("uintModulus", "SystemUInt32");
+      this.emitExtern(
+        "SystemUInt32.__op_Subtraction__SystemUInt32_SystemUInt32__SystemUInt32",
+        [left, product],
+        remainder
+      );
+      return remainder;
+    }
+
     const extern = binaryExtern(operator, left.type, right.type);
     if (!extern) this.fail(`演算子 '${operator}' は ${sourceTypeName(left.type)} に使えません`, node);
     const output = this.allocate("binary", extern.returns);
     this.emitExtern(extern.signature, [left, right], output);
-    this.assertAssignable(output.type, expected, node);
     return output;
   }
 

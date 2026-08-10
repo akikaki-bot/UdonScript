@@ -169,6 +169,22 @@ test("lowers control flow and arithmetic operators", () => {
   assert.match(assembly, /JUMP_IF_FALSE/);
 });
 
+test("lowers uint modulus without the unsupported Udon extern", () => {
+  const assembly = successful(`
+    on("Start", () => {
+      let value: uint = 4294967295;
+      let remainder: uint = value % 251;
+      value %= 17;
+      Debug.log(remainder);
+      Debug.log(value);
+    });
+  `);
+  assert.doesNotMatch(assembly, /SystemUInt32\.__op_Modulus/);
+  assert.equal((assembly.match(/SystemUInt32\.__op_Division/g) ?? []).length, 2);
+  assert.equal((assembly.match(/SystemUInt32\.__op_Multiplication/g) ?? []).length, 2);
+  assert.equal((assembly.match(/SystemUInt32\.__op_Subtraction/g) ?? []).length, 2);
+});
+
 test("inlines typed user functions", () => {
   const assembly = successful(`
     function twice(value: float): float { return value * 2; }
