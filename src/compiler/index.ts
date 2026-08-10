@@ -113,7 +113,7 @@ class Compiler {
     });
     this.selfReceiver = this.allocate(
       "__this_udonBehaviour",
-      "VRCUdonCommonInterfacesIUdonEventReceiver",
+      "VRCUdonUdonBehaviour",
       "this",
       { exact: true }
     );

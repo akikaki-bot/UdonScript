@@ -127,6 +127,8 @@ test("emits local, delayed and network custom event calls", () => {
   assert.match(assembly, /IUdonEventReceiver\.__SendCustomEventDelayedSeconds/);
   assert.match(assembly, /IUdonEventReceiver\.__SendCustomEventDelayedFrames/);
   assert.equal((assembly.match(/IUdonEventReceiver\.__SendCustomNetworkEvent/g) ?? []).length, 2);
+  assert.match(assembly, /__this_udonBehaviour: %VRCUdonUdonBehaviour, this/);
+  assert.doesNotMatch(assembly, /%VRCUdonCommonInterfacesIUdonEventReceiver, this/);
   assert.equal((assembly.match(/%VRCUdonCommonEnumsEventTiming/g) ?? []).length, 1);
   assert.equal((assembly.match(/%SystemString, "OpenDoor"/g) ?? []).length, 1);
   assert.match(assembly, /target: %VRCUdonCommonInterfacesNetworkEventTarget, null/);
