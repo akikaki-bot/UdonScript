@@ -25,12 +25,17 @@ interface ScreenUpdateData {}
 interface VRCCameraSettings {}
 interface PlayerDataInfo { readonly key: string; readonly state: int; }
 interface UdonVariableOptions { readonly sync?: "none" | "linear" | "smooth"; }
-type UdonVariableDecorator = <This, Value>(value: undefined, context: ClassFieldDecoratorContext<This, Value>) => void;
+interface UdonVariableDecorator {
+  <This, Value>(value: undefined, context: ClassFieldDecoratorContext<This, Value>): void;
+  (target: object, propertyKey: string | symbol): void;
+}
 declare function udonVariable<This, Value>(value: undefined, context: ClassFieldDecoratorContext<This, Value>): void;
+declare function udonVariable(target: object, propertyKey: string | symbol): void;
 declare function udonVariable(options: UdonVariableOptions): UdonVariableDecorator;
 declare function udonVariable<T>(initialValue?: T, options?: UdonVariableOptions): T;
-declare function comptime<T>(factory: () => T): T;
 declare function comptime<This, Args extends unknown[], Return>(value: (this: This, ...args: Args) => Return, context: ClassMethodDecoratorContext<This, (this: This, ...args: Args) => Return>): void;
+declare function comptime(target: object, propertyKey: string | symbol, descriptor: PropertyDescriptor): void;
+declare function comptime<T>(factory: () => T): T;
 declare function on(event: "OnEnable", handler: () => void): void;
 declare function on(event: "Start", handler: () => void): void;
 declare function on(event: "Update", handler: () => void): void;

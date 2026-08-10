@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "experimentalDecorators": true
+  },
+  "files": [
+    "../types/udon.d.ts",
+    "decorators-legacy.ts"
+  ]
+}

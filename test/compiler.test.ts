@@ -559,6 +559,9 @@ test("passes ref and out extern parameters as writable heap addresses", () => {
 
 test("generates UdonBehaviour event completion with typed parameters", () => {
   const declarations = generateDeclarations([]);
+  assert.match(declarations, /UdonVariableDecorator[\s\S]*target: object, propertyKey: string \| symbol/);
+  assert.match(declarations, /comptime\(target: object, propertyKey: string \| symbol, descriptor: PropertyDescriptor\): void/);
+  assert.match(declarations, /comptime<T>\(factory: \(\) => T\): T/);
   assert.match(declarations, /OnPlayerJoined\(player: VRCPlayerApi\): void/);
   assert.match(declarations, /InputJump\(value: boolean, args: UdonInputEventArgs\): void/);
   assert.match(declarations, /OnPostSerialization\(result: SerializationResult\): void/);

@@ -232,6 +232,8 @@ on("Start", () => Debug.log(twice(3)));
 
 必ずコンパイル時に計算したい処理には`comptime`を使用します。トップレベルでは引数なしのファクトリ関数、`UdonBehaviour`クラスではprivateまたはprotectedメソッドの`@comptime`を使用します。
 
+生成される型定義は、標準デコレーターと`experimentalDecorators: true`の旧式デコレーターの両方に対応します。TS1270などのデコレーター型エラーが出る場合は、CLIを更新したうえで参照中の`generated.d.ts`を再生成してください。
+
 ```ts
 function buildTable(length: int): uint[] {
   const values = new Array<uint>(length);
