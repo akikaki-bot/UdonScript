@@ -321,6 +321,61 @@ test("casts loop indexes for comptime functions and builds a 256-value table", (
   assert.doesNotMatch(result.assembly, /calcValue_index|calcValue_return/);
 });
 
+test("erases top-level arrays referenced only by comptime code", () => {
+  const result = compile(`
+    function buildTable(): uint[] {
+      const values = new Array<uint>(4);
+      for (let i: int = 0; i < values.length; i++) values[i] = i as uint;
+      return values;
+    }
+    const table: uint[] = comptime((): uint[] => buildTable());
+
+    export class Example extends UdonBehaviour {
+      @comptime
+      private sumTable(): uint {
+        let sum: uint = 0;
+        for (let i: int = 0; i < table.length; i++) sum += table[i];
+        return sum;
+      }
+      public override Start(): void {
+        let sum: uint = comptime((): uint => this.sumTable());
+        Debug.log(sum);
+      }
+    }
+  `);
+  assert.deepEqual(result.diagnostics, []);
+  assert.match(result.assembly, /%SystemUInt32, 6u/);
+  assert.doesNotMatch(result.assembly, /^\s*table:/m);
+  assert.doesNotMatch(result.assembly, /_onEnable|Array\.__ctor__|Array\.__Set__/);
+});
+
+test("keeps comptime-created top-level arrays when runtime code references them", () => {
+  const result = compile(`
+    const table: uint[] = comptime((): uint[] => {
+      const values = new Array<uint>(4);
+      values[3] = 9;
+      return values;
+    });
+    on("Start", () => Debug.log(table.length));
+  `);
+  assert.deepEqual(result.diagnostics, []);
+  assert.match(result.assembly, /^\s*table: %SystemUInt32Array/m);
+  assert.match(result.assembly, /_onEnable/);
+  assert.match(result.assembly, /SystemUInt32Array\.__ctor__/);
+});
+
+test("erases comptime globals consumed by another comptime initializer", () => {
+  const result = compile(`
+    const table: uint[] = comptime((): uint[] => new Array<uint>(4));
+    const length: uint = comptime((): uint => table.length as uint);
+    on("Start", () => Debug.log(length));
+  `);
+  assert.deepEqual(result.diagnostics, []);
+  assert.doesNotMatch(result.assembly, /^\s*table:/m);
+  assert.doesNotMatch(result.assembly, /Array\.__ctor__/);
+  assert.match(result.assembly, /^\s*length: %SystemUInt32, 4u/m);
+});
+
 test("does not report undefined globals after a comptime declaration fails", () => {
   const result = compile(`
     let runtimeValue = udonVariable<uint>(1);

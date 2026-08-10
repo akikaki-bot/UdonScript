@@ -189,3 +189,46 @@ test("imports exported arrow functions and removes duplicate diagnostics", () =>
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("tracks comptime-only globals across imported modules", () => {
+  const directory = mkdtempSync(resolve(tmpdir(), "udonscript-project-"));
+  try {
+    const entry = resolve(directory, "main.ts");
+    writeFileSync(resolve(directory, "table.ts"), `
+      export const table: uint[] = comptime((): uint[] => {
+        const values = new Array<uint>(4);
+        values[3] = 9;
+        return values;
+      });
+    `, "utf8");
+    writeFileSync(entry, `
+      import { table } from "./table.js";
+      export class Example extends UdonBehaviour {
+        @comptime private sum(): uint {
+          let result: uint = 0;
+          for (let i: int = 0; i < table.length; i++) result += table[i];
+          return result;
+        }
+        public override Start(): void { Debug.log(this.sum()); }
+      }
+    `, "utf8");
+    const erased = compileProject(entry);
+    assert.deepEqual(erased.diagnostics, []);
+    const erasedEntry = erased.artifacts.at(-1)!.assembly;
+    assert.doesNotMatch(erasedEntry, /^\s*table:/m);
+    assert.doesNotMatch(erasedEntry, /Array\.__ctor__|_onEnable/);
+    assert.match(erasedEntry, /%SystemUInt32, 9u/);
+
+    writeFileSync(entry, `
+      import { table } from "./table.js";
+      on("Start", () => Debug.log(table.length));
+    `, "utf8");
+    const retained = compileProject(entry);
+    assert.deepEqual(retained.diagnostics, []);
+    const retainedEntry = retained.artifacts.at(-1)!.assembly;
+    assert.match(retainedEntry, /^\s*__module_table(?:_\d+)?: %SystemUInt32Array/m);
+    assert.match(retainedEntry, /SystemUInt32Array\.__ctor__|_onEnable/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

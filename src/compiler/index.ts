@@ -21,6 +21,7 @@ import {
   encodeComptimeScalar
 } from "./comptime-evaluator.js";
 import { InlineOptimizer } from "./inline-optimizer.js";
+import { findComptimeOnlyGlobals } from "./comptime-usage.js";
 import type { BehaviorDefinition, CompilerProjectContext } from "./project-context.js";
 import { binaryExtern, ExternRegistry, unaryExtern } from "../extern-registry.js";
 import type {
@@ -67,6 +68,7 @@ class Compiler {
   private readonly project: CompilerProjectContext | undefined;
   private readonly functionsByDeclaration = new Map<ts.Declaration, FunctionInfo>();
   private readonly globalsByDeclaration = new Map<ts.VariableDeclaration, ValueRef>();
+  private readonly comptimeOnlyGlobals: ReadonlySet<ts.VariableDeclaration>;
 
   constructor(source: string | ts.SourceFile, private readonly options: CompileOptions, project?: CompilerProjectContext) {
     const fileName = options.fileName ?? "input.ts";
@@ -74,6 +76,11 @@ class Compiler {
       ? ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
       : source;
     this.project = project;
+    this.comptimeOnlyGlobals = findComptimeOnlyGlobals(
+      this.sourceFile,
+      this.project?.dependenciesBySource.get(this.sourceFile) ?? [],
+      this.project?.checker
+    );
     this.assembly = new AssemblyBuilder(options.optimize !== false);
     this.registry = new ExternRegistry(options.externs);
     this.typeInference = new ExpressionTypeInferer({
@@ -323,6 +330,8 @@ class Compiler {
         ? this.inferLiteralType(initializer)
         : undefined);
       if (!type) this.fail(`変数 '${name}' にはUdon型注釈が必要です`, declaration);
+      if (comptimeValue) this.assertAssignable(comptimeValue.type, type, initializer!);
+      if (ts.isVariableDeclaration(declaration) && this.comptimeOnlyGlobals.has(declaration)) return;
       const constant = comptimeValue ? encodeComptimeScalar(comptimeValue) : initializer ? this.dataLiteral(initializer, type) : undefined;
       const target = this.allocate(symbolBase ?? name, type, constant ?? defaultValue(type), {
         exported,
@@ -1158,6 +1167,10 @@ class Compiler {
   }
 
   private inferExpressionType(node: ts.Expression, scope: Scope): UdonType | undefined {
+    if (ts.isIdentifier(node)) {
+      const value = scope.get(node.text) ?? this.importedGlobal(node);
+      if (value) return value.type;
+    }
     if (this.isComptimeCall(node)) return this.comptime.evaluateFactory(node as ts.CallExpression).type;
     if (ts.isCallExpression(node)) {
       const reference = ts.isIdentifier(node.expression)

@@ -261,6 +261,8 @@ export class ItemIds extends UdonBehaviour {
 
 Udonの`int` / `uint`の32bit wrapと`float`の32bit丸めを保ちます。実行時のInspector値、イベント引数、`Debug.log`などの副作用、未知のexternを参照するとCompileErrorになります。無限評価や巨大配列を防ぐため、評価ステップ数、配列長、呼び出し深度に上限があります。
 
+`comptime(...)`で作ったトップレベル`const`が、明示的な`comptime`処理または`@comptime`メソッドからしか参照されない場合、その値はコンパイル後にUdon Heapへ出力しません。特に大きな配列では、ランタイム用のコンストラクターと要素ごとの`Set`を丸ごと削除できます。通常のイベントやメソッドから1か所でも参照される値は、従来どおりランタイム値として安全に保持します。
+
 最適化前後のHeap・命令・`COPY`・`EXTERN`数はCLIで確認できます。
 
 ```sh
