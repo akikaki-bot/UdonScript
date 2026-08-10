@@ -291,6 +291,49 @@ test("reports invalid comptime Array lengths and missing element types", () => {
   assert.match(huge.diagnostics[0]!.message, /長さが上限100000/);
 });
 
+test("casts loop indexes for comptime functions and builds a 256-value table", () => {
+  const result = compile(`
+    function calcValue(index: uint): uint {
+      return (index * index + index * 3 + 7) % 251 as uint;
+    }
+
+    function buildTable(): uint[] {
+      const table: uint[] = new Array<uint>(256);
+      for (let i: int = 0; i < table.length; i++) {
+        table[i] = calcValue(i as uint);
+      }
+      return table;
+    }
+
+    const table: uint[] = comptime((): uint[] => buildTable());
+
+    export class ComptimeBenchmark extends UdonBehaviour {
+      public override Start(): void {
+        let sum: uint = 0;
+        for (let i: int = 0; i < table.length; i++) sum += table[i];
+        Debug.log(sum);
+      }
+    }
+  `, { fileName: "bench-comptime.ts" });
+  assert.deepEqual(result.diagnostics, []);
+  assert.match(result.assembly, /%SystemInt32, 256/);
+  assert.doesNotMatch(result.assembly, /SystemUInt32\.__op_Multiplication|SystemUInt32\.__op_Modulus/);
+  assert.doesNotMatch(result.assembly, /calcValue_index|calcValue_return/);
+});
+
+test("does not report undefined globals after a comptime declaration fails", () => {
+  const result = compile(`
+    let runtimeValue = udonVariable<uint>(1);
+    const failed: uint = comptime((): uint => runtimeValue);
+    export class Example extends UdonBehaviour {
+      public override Start(): void { Debug.log(failed); }
+    }
+  `);
+  assert.equal(result.diagnostics.length, 1);
+  assert.match(result.diagnostics[0]!.message, /comptimeで確定していません/);
+  assert.doesNotMatch(result.diagnostics[0]!.message, /未定義/);
+});
+
 test("evaluates private @comptime methods and rejects runtime inputs or side effects", () => {
   const valid = compile(`
     export class Ids extends UdonBehaviour {

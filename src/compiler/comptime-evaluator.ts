@@ -221,7 +221,8 @@ export class ComptimeEvaluator {
     this.tick(node);
     if (ts.isParenthesizedExpression(node)) return this.evaluateExpression(node.expression, env, expected);
     if (ts.isAsExpression(node) || ts.isTypeAssertionExpression(node)) {
-      return this.evaluateExpression(node.expression, env, this.context.requireType(node.type));
+      const target = this.context.requireType(node.type);
+      return this.cast(this.evaluateExpression(node.expression, env), target, node);
     }
     if (ts.isNumericLiteral(node)) {
       const type = expected && isNumeric(expected)
@@ -481,6 +482,19 @@ export class ComptimeEvaluator {
     if (value.type !== expected && expected !== "SystemObject") {
       this.context.fail(`${sourceTypeName(value.type)}を${sourceTypeName(expected)}としてcomptime評価できません`, node);
     }
+  }
+
+  private cast(value: ComptimeValue, target: UdonType, node: ts.Node): ComptimeValue {
+    if (value.type === target) return value;
+    if (isNumeric(value.type) && isNumeric(target) &&
+      (typeof value.value === "bigint" || typeof value.value === "number")) {
+      if (typeof value.value === "number" && !Number.isFinite(value.value)) {
+        this.context.fail(`${sourceTypeName(value.type)}の非有限値を${sourceTypeName(target)}へ変換できません`, node);
+      }
+      return { type: target, value: numeric(target, value.value) };
+    }
+    if (value.value === null && !isNumeric(target) && target !== "SystemBoolean") return { type: target, value: null };
+    this.context.fail(`${sourceTypeName(value.type)}を${sourceTypeName(target)}へcomptime castできません`, node);
   }
 }
 

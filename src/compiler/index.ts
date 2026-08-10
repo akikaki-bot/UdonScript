@@ -127,6 +127,9 @@ class Compiler {
     if (this.diagnostics.length > 0) return { assembly: "", diagnostics: this.diagnostics };
 
     this.collectDeclarations();
+    // Declaration failures can leave globals or functions intentionally unregistered.
+    // Continuing into event lowering would only add misleading "undefined" diagnostics.
+    if (this.diagnostics.length > 0) return { assembly: "", diagnostics: this.diagnostics };
     const declaredEvents = new Set<string>();
     const entryGroups = new Map<string, FunctionInfo[]>();
     for (const info of this.entries) {
