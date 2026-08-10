@@ -8,6 +8,8 @@
 
 CLIに加えて、Unityの`Assets`内に置いたTypeScriptをコンパイルし、Udon Behaviourへ割り当てるEditor拡張を同梱しています。
 
+重い純粋計算は`comptime`でビルド時へ移動でき、Unity Editor＋ClientSimでの[参考ベンチマーク](#comptimeベンチマーク)ではruntime版より平均約12.5倍高速でした。
+
 ## セットアップ
 
 ```sh
@@ -269,6 +271,28 @@ Udonの`int` / `uint`の32bit wrapと`float`の32bit丸めを保ちます。実�
 udon-ts behaviour.ts --stats
 udon-ts behaviour.ts --no-optimize # 比較・デバッグ用
 ```
+
+#### `comptime`ベンチマーク
+
+256要素に対する同じ整数演算と合計を128回要求し、`comptime`版では合計値まで事前計算、runtime版ではUdon VM上で毎回計算しました。時計externの初回呼び出しとruntime版のウォームアップは計測区間から外し、`Debug.log`も計測終了後に実行しています。
+
+```ts
+const precomputedSum: uint = comptime((): uint => calculateSum());
+
+for (let round: uint = 0; round < 128; round++) {
+  checksum += precomputedSum;
+}
+```
+
+Unity 2022.3.22f1のEditor＋ClientSimで計測した参考値です。両方のチェックサムは`3,835,392`で一致しました。
+
+| 実行 | `comptime` | runtime | 高速化 |
+| --- | ---: | ---: | ---: |
+| 1回目 | 2.479 ms | 36.248 ms | 約14.6倍 |
+| 2回目 | 2.898 ms | 31.021 ms | 約10.7倍 |
+| 平均 | 2.689 ms | 33.635 ms | **約12.5倍** |
+
+同じソースを生成したUASMの静的な命令数も、`comptime`版は81命令、runtime版は196命令でした。測定値はPCやUnity Editorの状態で変動しますが、大きな純粋計算をビルド時へ移すことで、Udon VMが実行する仕事そのものを削減できます。
 
 ### 配列
 

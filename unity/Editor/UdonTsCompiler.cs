@@ -233,6 +233,11 @@ namespace UdonTs.Editor
                     assemblyProgram.AssemblyError);
             }
 
+            // Rebuild the serialized program used by already-attached UdonBehaviours.
+            // Importing the generated .uasm alone can leave those behaviours running
+            // the previously serialized bytecode until the program is reassigned.
+            program.RefreshProgram();
+
             UnityEngine.Debug.Log("Compiled UdonScript: " + sourceAssetPath + " -> " + outputAssetPath, program);
             return outputAssetPath;
         }
