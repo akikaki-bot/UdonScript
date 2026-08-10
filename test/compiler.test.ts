@@ -239,6 +239,58 @@ test("evaluates comptime arrays and materializes only their final values", () =>
   assert.doesNotMatch(result.assembly, /op_Multiplication|op_LessThan/);
 });
 
+test("creates typed fixed-length arrays with new Array inside comptime", () => {
+  const result = compile(`
+    on("Start", () => {
+      const numbers: uint[] = comptime((): uint[] => {
+        const values = new Array<uint>(32);
+        values[31] = 99;
+        return values;
+      });
+      const flags: bool[] = comptime((): bool[] => {
+        const values = new Array<bool>(2);
+        values[1] = true;
+        return values;
+      });
+      const objects: GameObject[] = comptime((): GameObject[] => new Array<GameObject>(2));
+      Debug.log(numbers[31]);
+      Debug.log(flags[1]);
+      Debug.log(objects.length);
+    });
+  `);
+  assert.deepEqual(result.diagnostics, []);
+  assert.match(result.assembly, /%SystemInt32, 32/);
+  assert.match(result.assembly, /%SystemUInt32, 99u/);
+  assert.equal((result.assembly.match(/SystemUInt32Array\.__Set__/g) ?? []).length, 1);
+  assert.equal((result.assembly.match(/SystemBooleanArray\.__Set__/g) ?? []).length, 1);
+  assert.doesNotMatch(result.assembly, /SystemGameObjectArray\.__Set__|UnityEngineGameObjectArray\.__Set__/);
+});
+
+test("reports invalid comptime Array lengths and missing element types", () => {
+  const negative = compile(`on("Start", () => comptime((): uint[] => new Array<uint>(-1)));`);
+  assert.equal(negative.diagnostics.length, 1);
+  assert.match(negative.diagnostics[0]!.message, /0以上/);
+
+  const fractional = compile(`on("Start", () => comptime((): uint[] => new Array<uint>(2.5)));`);
+  assert.equal(fractional.diagnostics.length, 1);
+  assert.match(fractional.diagnostics[0]!.message, /確定するint/);
+
+  const runtime = compile(`
+    let length = udonVariable<int>(32);
+    on("Start", () => comptime((): uint[] => new Array<uint>(length)));
+  `);
+  assert.equal(runtime.diagnostics.length, 1);
+  assert.match(runtime.diagnostics[0]!.message, /comptimeで確定していません/);
+
+  const missingType = compile(`on("Start", () => comptime(() => new Array(2)));`);
+  assert.equal(missingType.diagnostics.length, 1);
+  assert.match(missingType.diagnostics[0]!.message, /要素型を1つ指定/);
+
+  const huge = compile(`on("Start", () => comptime((): uint[] => new Array<uint>(100001)));`);
+  assert.equal(huge.diagnostics.length, 1);
+  assert.match(huge.diagnostics[0]!.message, /長さが上限100000/);
+});
+
 test("evaluates private @comptime methods and rejects runtime inputs or side effects", () => {
   const valid = compile(`
     export class Ids extends UdonBehaviour {

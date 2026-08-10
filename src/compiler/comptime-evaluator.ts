@@ -55,6 +55,13 @@ function numeric(type: UdonType, value: bigint | number): bigint | number {
   return type === "SystemSingle" ? Math.fround(number) : number;
 }
 
+function defaultComptimeValue(type: UdonType): ComptimeValue {
+  if (type === "SystemInt32" || type === "SystemUInt32") return { type, value: 0n };
+  if (type === "SystemSingle" || type === "SystemDouble") return { type, value: 0 };
+  if (type === "SystemBoolean") return { type, value: false };
+  return { type, value: null };
+}
+
 function truthy(value: ComptimeValue): boolean {
   if (typeof value.value === "boolean") return value.value;
   if (typeof value.value === "bigint") return value.value !== 0n;
@@ -257,6 +264,38 @@ export class ComptimeEvaluator {
       const inferredElement = elementType ?? values[0]?.type;
       if (!inferredElement) this.context.fail("空のcomptime配列には型注釈が必要です", node);
       return { type: expected ?? `${inferredElement}Array`, value: values };
+    }
+    if (ts.isNewExpression(node)) {
+      if (!ts.isIdentifier(node.expression) || node.expression.text !== "Array") {
+        this.context.fail("comptimeでnewできるのは new Array<T>(length) のみです", node);
+      }
+      const typeArgument = node.typeArguments?.[0];
+      if (!typeArgument || node.typeArguments?.length !== 1) {
+        this.context.fail("comptimeのnew Array<T>(length)には要素型を1つ指定してください", node);
+      }
+      const args = node.arguments ?? ts.factory.createNodeArray<ts.Expression>();
+      if (args.length !== 1) {
+        this.context.fail("comptimeのnew Array<T>(length)には長さを1つ指定してください", node);
+      }
+      const elementType = this.context.requireType(typeArgument);
+      const arrayType = `${elementType}Array`;
+      const length = this.evaluateExpression(args[0]!, env);
+      if (length.type !== "SystemInt32" || typeof length.value !== "bigint") {
+        this.context.fail("comptime配列の長さはコンパイル時に確定するintで指定してください", args[0]!);
+      }
+      if (length.value < 0n) this.context.fail("comptime配列の長さは0以上にしてください", args[0]!);
+      if (length.value > BigInt(this.maxSteps)) {
+        this.context.fail(`comptime配列の長さが上限${this.maxSteps}を超えています`, args[0]!);
+      }
+      const values: ComptimeValue[] = [];
+      const initial = defaultComptimeValue(elementType);
+      for (let index = 0; index < Number(length.value); index++) {
+        this.tick(node);
+        values.push(clone(initial));
+      }
+      const value = { type: arrayType, value: values } satisfies ComptimeValue;
+      if (expected) this.assertType(value, expected, node);
+      return value;
     }
     if (ts.isElementAccessExpression(node)) {
       const array = this.evaluateExpression(node.expression, env);

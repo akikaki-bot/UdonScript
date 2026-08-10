@@ -1,14 +1,14 @@
 /// <reference path="../types/udon.d.ts" />
 
-function buildTable(): uint[] {
-  const values: uint[] = [0, 0, 0, 0];
+function buildTable(length: int): uint[] {
+  const values = new Array<uint>(length);
   for (let index: int = 0; index < values.length; index++) {
     values[index] = (index as uint) * 2;
   }
   return values;
 }
 
-const table: uint[] = comptime((): uint[] => buildTable());
+const table: uint[] = comptime((): uint[] => buildTable(32));
 
 export class ComptimeExample extends UdonBehaviour {
   @comptime

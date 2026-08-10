@@ -1358,7 +1358,7 @@ class Compiler {
     if (Array.isArray(value.value)) {
       const expression = this.comptimeValueExpression(value);
       if (!ts.isArrayLiteralExpression(expression)) this.fail("comptime配列を生成できません", node);
-      return this.arrays.compileLiteral(expression, scope, value.type, flow);
+      return this.arrays.compileLiteral(expression, scope, value.type, flow, true);
     }
     if (value.type === "SystemBoolean" && typeof value.value === "boolean") {
       const expression = value.value ? ts.factory.createTrue() : ts.factory.createFalse();

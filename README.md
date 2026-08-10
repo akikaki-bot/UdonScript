@@ -233,15 +233,15 @@ on("Start", () => Debug.log(twice(3)));
 必ずコンパイル時に計算したい処理には`comptime`を使用します。トップレベルでは引数なしのファクトリ関数、`UdonBehaviour`クラスではprivateまたはprotectedメソッドの`@comptime`を使用します。
 
 ```ts
-function buildTable(): uint[] {
-  const values: uint[] = [0, 0, 0, 0];
+function buildTable(length: int): uint[] {
+  const values = new Array<uint>(length);
   for (let index: int = 0; index < values.length; index++) {
     values[index] = (index as uint) * 2;
   }
   return values;
 }
 
-const table: uint[] = comptime((): uint[] => buildTable());
+const table: uint[] = comptime((): uint[] => buildTable(32));
 
 export class ItemIds extends UdonBehaviour {
   @comptime
@@ -255,7 +255,9 @@ export class ItemIds extends UdonBehaviour {
 }
 ```
 
-`comptime`内では、整数・浮動小数点・文字列・真偽値の演算、`if`、`while`、`for`、配列、純粋なユーザー関数、許可された`Math` / `Mathf`関数（`sin`, `cos`, `clamp`, `abs`, `min`, `max`）を使用できます。Udonの`int` / `uint`の32bit wrapと`float`の32bit丸めを保ちます。実行時のInspector値、イベント引数、`Debug.log`などの副作用、未知のexternを参照するとCompileErrorになります。無限評価を防ぐため、評価ステップ数と呼び出し深度にも上限があります。
+`comptime`内では、整数・浮動小数点・文字列・真偽値の演算、`if`、`while`、`for`、配列リテラル、`new Array<T>(固定長)`、純粋なユーザー関数、許可された`Math` / `Mathf`関数（`sin`, `cos`, `clamp`, `abs`, `min`, `max`）を使用できます。固定長はコンパイル時に確定する0以上の`int`で指定します。数値・真偽値要素はゼロ値、参照型要素は`null`で初期化され、最終値が既定値の要素には不要なUdonの`Set`命令を生成しません。
+
+Udonの`int` / `uint`の32bit wrapと`float`の32bit丸めを保ちます。実行時のInspector値、イベント引数、`Debug.log`などの副作用、未知のexternを参照するとCompileErrorになります。無限評価や巨大配列を防ぐため、評価ステップ数、配列長、呼び出し深度に上限があります。
 
 最適化前後のHeap・命令・`COPY`・`EXTERN`数はCLIで確認できます。
 

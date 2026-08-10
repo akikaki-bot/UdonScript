@@ -3,6 +3,16 @@ import type { FlowContext, Scope, ValueRef } from "./compiler-context.js";
 import type { UdonType } from "../model.js";
 import { arrayElementType, isArray, sourceTypeName } from "../type-system.js";
 
+function isDefaultElement(node: ts.Expression, elementType: UdonType): boolean {
+  if (node.kind === ts.SyntaxKind.NullKeyword) return true;
+  if (elementType === "SystemBoolean" && node.kind === ts.SyntaxKind.FalseKeyword) return true;
+  if ((elementType === "SystemInt32" || elementType === "SystemUInt32" ||
+    elementType === "SystemSingle" || elementType === "SystemDouble") && ts.isNumericLiteral(node)) {
+    return Number(node.text) === 0;
+  }
+  return false;
+}
+
 export interface ArrayExterns {
   elementType: UdonType;
   constructor: string;
@@ -37,7 +47,13 @@ export interface ArrayLoweringContext {
 export class ArrayLowerer {
   constructor(private readonly context: ArrayLoweringContext) {}
 
-  compileLiteral(node: ts.ArrayLiteralExpression, scope: Scope, expected: UdonType | undefined, flow: FlowContext): ValueRef {
+  compileLiteral(
+    node: ts.ArrayLiteralExpression,
+    scope: Scope,
+    expected: UdonType | undefined,
+    flow: FlowContext,
+    skipDefaultElements = false
+  ): ValueRef {
     const arrayType = expected && isArray(expected)
       ? expected
       : this.context.inferExpressionType(node, scope);
@@ -52,6 +68,7 @@ export class ArrayLowerer {
       if (ts.isSpreadElement(element) || ts.isOmittedExpression(element)) {
         this.context.fail("配列のspreadと空要素には対応していません", element);
       }
+      if (skipDefaultElements && isDefaultElement(element, externs.elementType)) return;
       const indexValue = this.context.allocate("array_index", "SystemInt32", String(index));
       const value = this.context.compileExpression(element, scope, externs.elementType, flow);
       this.context.emitExtern(externs.set, [output, indexValue, value]);
